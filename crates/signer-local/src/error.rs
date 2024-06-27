@@ -32,4 +32,9 @@ pub enum LocalSignerError {
     #[cfg(feature = "keystore")]
     #[error(transparent)]
     EthKeystoreError(#[from] eth_keystore::KeystoreError),
+
+    /// [`yubihsm::client`] error.
+    #[cfg(feature = "yubihsm")]
+    #[error(transparent)]
+    YubiHsmError(#[from] yubihsm::client::Error),
 }

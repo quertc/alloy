@@ -1,6 +1,6 @@
 //! [YubiHSM2](yubihsm) signer implementation.
 
-use super::LocalSigner;
+use crate::{LocalSigner, LocalSignerError};
 use alloy_signer::utils::raw_public_key_to_address;
 use elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
 use k256::{PublicKey, Secp256k1};
@@ -11,10 +11,14 @@ use yubihsm::{
 
 impl LocalSigner<YubiSigner<Secp256k1>> {
     /// Connects to a yubi key's ECDSA account at the provided id
-    pub fn connect(connector: Connector, credentials: Credentials, id: object::Id) -> Self {
-        let client = Client::open(connector, credentials, true).unwrap();
-        let signer = YubiSigner::create(client, id).unwrap();
-        signer.into()
+    pub fn connect(
+        connector: Connector,
+        credentials: Credentials,
+        id: object::Id,
+    ) -> Result<Self, LocalSignerError> {
+        let client = Client::open(connector, credentials, true)?;
+        let signer = YubiSigner::create(client, id)?;
+        Ok(signer.into())
     }
 
     /// Creates a new random ECDSA keypair on the yubi at the provided id
@@ -24,13 +28,12 @@ impl LocalSigner<YubiSigner<Secp256k1>> {
         id: object::Id,
         label: Label,
         domain: Domain,
-    ) -> Self {
-        let client = Client::open(connector, credentials, true).unwrap();
-        let id = client
-            .generate_asymmetric_key(id, label, domain, Capability::SIGN_ECDSA, EcK256)
-            .unwrap();
-        let signer = YubiSigner::create(client, id).unwrap();
-        signer.into()
+    ) -> Result<Self, LocalSignerError> {
+        let client = Client::open(connector, credentials, true)?;
+        let id =
+            client.generate_asymmetric_key(id, label, domain, Capability::SIGN_ECDSA, EcK256)?;
+        let signer = YubiSigner::create(client, id)?;
+        Ok(signer.into())
     }
 
     /// Uploads the provided keypair on the yubi at the provided id
@@ -41,13 +44,12 @@ impl LocalSigner<YubiSigner<Secp256k1>> {
         label: Label,
         domain: Domain,
         key: impl Into<Vec<u8>>,
-    ) -> Self {
-        let client = Client::open(connector, credentials, true).unwrap();
-        let id = client
-            .put_asymmetric_key(id, label, domain, Capability::SIGN_ECDSA, EcK256, key)
-            .unwrap();
-        let signer = YubiSigner::create(client, id).unwrap();
-        signer.into()
+    ) -> Result<Self, LocalSignerError> {
+        let client = Client::open(connector, credentials, true)?;
+        let id =
+            client.put_asymmetric_key(id, label, domain, Capability::SIGN_ECDSA, EcK256, key)?;
+        let signer = YubiSigner::create(client, id)?;
+        Ok(signer.into())
     }
 }
 
@@ -82,7 +84,8 @@ mod tests {
             Label::from_bytes(&[]).unwrap(),
             Domain::at(1).unwrap(),
             key,
-        );
+        )
+        .expect("Failed to create LocalSigner from key");
 
         let msg = "Some data";
         let sig = signer.sign_message_sync(msg.as_bytes()).unwrap();
@@ -99,7 +102,8 @@ mod tests {
             0,
             Label::from_bytes(&[]).unwrap(),
             Domain::at(1).unwrap(),
-        );
+        )
+        .expect("Failed to create new LocalSigner");
 
         let msg = "Some data";
         let sig = signer.sign_message_sync(msg.as_bytes()).unwrap();
