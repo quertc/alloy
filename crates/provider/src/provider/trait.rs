@@ -1,6 +1,7 @@
 //! Ethereum JSON-RPC provider.
 
 use crate::{
+    heart::PendingTransactionError,
     utils::{self, Eip1559Estimation, EstimatorFunction},
     EthCall, Identity, PendingTransaction, PendingTransactionBuilder, PendingTransactionConfig,
     ProviderBuilder, RootProvider, RpcWithBlock, SendableTx,
@@ -8,16 +9,19 @@ use crate::{
 use alloy_eips::eip2718::Encodable2718;
 use alloy_json_rpc::{RpcError, RpcParam, RpcReturn};
 use alloy_network::{Ethereum, Network};
+use alloy_network_primitives::{
+    BlockResponse, BlockTransactionsKind, HeaderResponse, ReceiptResponse,
+};
 use alloy_primitives::{
     hex, Address, BlockHash, BlockNumber, Bytes, StorageKey, StorageValue, TxHash, B256, U128,
     U256, U64,
 };
 use alloy_rpc_client::{ClientRef, PollerBuilder, RpcCall, WeakClient};
 use alloy_rpc_types_eth::{
-    AccessListWithGasUsed, Block, BlockId, BlockNumberOrTag, BlockTransactionsKind,
-    EIP1186AccountProofResponse, FeeHistory, Filter, FilterChanges, Log, SyncStatus,
+    AccessListResult, BlockId, BlockNumberOrTag, EIP1186AccountProofResponse, FeeHistory, Filter,
+    FilterChanges, Log, SyncStatus,
 };
-use alloy_transport::{BoxTransport, Transport, TransportErrorKind, TransportResult};
+use alloy_transport::{BoxTransport, Transport, TransportResult};
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 
@@ -147,7 +151,10 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// Not all client implementations support state overrides.
     #[doc(alias = "eth_call")]
     #[doc(alias = "call_with_overrides")]
-    fn call<'req>(&self, tx: &'req N::TransactionRequest) -> EthCall<'req, 'static, T, N, Bytes> {
+    fn call<'req, 'state>(
+        &self,
+        tx: &'req N::TransactionRequest,
+    ) -> EthCall<'req, 'state, T, N, Bytes> {
         EthCall::new(self.weak_client(), tx)
     }
 
@@ -162,7 +169,7 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     fn create_access_list<'a>(
         &self,
         request: &'a N::TransactionRequest,
-    ) -> RpcWithBlock<T, &'a N::TransactionRequest, AccessListWithGasUsed> {
+    ) -> RpcWithBlock<T, &'a N::TransactionRequest, AccessListResult> {
         RpcWithBlock::new(self.weak_client(), "eth_createAccessList", request)
     }
 
@@ -208,8 +215,8 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
                 self.get_block_by_number(BlockNumberOrTag::Latest, false)
                     .await?
                     .ok_or(RpcError::NullResp)?
-                    .header
-                    .base_fee_per_gas
+                    .header()
+                    .base_fee_per_gas()
                     .ok_or(RpcError::UnsupportedFeature("eip1559"))?
             }
         };
@@ -241,10 +248,7 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
 
     /// Retrieves account information ([Account](alloy_consensus::Account)) for the given [Address]
     /// at the particular [BlockId].
-    async fn get_account(
-        &self,
-        address: Address,
-    ) -> RpcWithBlock<T, Address, alloy_consensus::Account> {
+    fn get_account(&self, address: Address) -> RpcWithBlock<T, Address, alloy_consensus::Account> {
         RpcWithBlock::new(self.weak_client(), "eth_getAccount", address)
     }
 
@@ -258,10 +262,10 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// Gets a block by either its hash, tag, or number, with full transactions or only hashes.
     async fn get_block(
         &self,
-        id: BlockId,
+        block: BlockId,
         kind: BlockTransactionsKind,
-    ) -> TransportResult<Option<Block>> {
-        match id {
+    ) -> TransportResult<Option<N::BlockResponse>> {
+        match block {
             BlockId::Hash(hash) => self.get_block_by_hash(hash.into(), kind).await,
             BlockId::Number(number) => {
                 let full = matches!(kind, BlockTransactionsKind::Full);
@@ -275,7 +279,7 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
         &self,
         hash: BlockHash,
         kind: BlockTransactionsKind,
-    ) -> TransportResult<Option<Block>> {
+    ) -> TransportResult<Option<N::BlockResponse>> {
         let full = match kind {
             BlockTransactionsKind::Full => true,
             BlockTransactionsKind::Hashes => false,
@@ -283,13 +287,13 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
 
         let block = self
             .client()
-            .request::<_, Option<Block>>("eth_getBlockByHash", (hash, full))
+            .request::<_, Option<N::BlockResponse>>("eth_getBlockByHash", (hash, full))
             .await?
             .map(|mut block| {
                 if !full {
                     // this ensures an empty response for `Hashes` has the expected form
                     // this is required because deserializing [] is ambiguous
-                    block.transactions.convert_to_hashes();
+                    block.transactions_mut().convert_to_hashes();
                 }
                 block
             });
@@ -303,26 +307,26 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
         &self,
         number: BlockNumberOrTag,
         hydrate: bool,
-    ) -> TransportResult<Option<Block>> {
+    ) -> TransportResult<Option<N::BlockResponse>> {
         let block = self
             .client()
-            .request::<_, Option<Block>>("eth_getBlockByNumber", (number, hydrate))
+            .request::<_, Option<N::BlockResponse>>("eth_getBlockByNumber", (number, hydrate))
             .await?
             .map(|mut block| {
                 if !hydrate {
                     // this ensures an empty response for `Hashes` has the expected form
                     // this is required because deserializing [] is ambiguous
-                    block.transactions.convert_to_hashes();
+                    block.transactions_mut().convert_to_hashes();
                 }
                 block
             });
         Ok(block)
     }
 
-    /// Gets the selected block [BlockNumberOrTag] receipts.
+    /// Gets the selected block [BlockId] receipts.
     async fn get_block_receipts(
         &self,
-        block: BlockNumberOrTag,
+        block: BlockId,
     ) -> TransportResult<Option<Vec<N::ReceiptResponse>>> {
         self.client().request("eth_getBlockReceipts", (block,)).await
     }
@@ -480,7 +484,7 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     async fn watch_pending_transaction(
         &self,
         config: PendingTransactionConfig,
-    ) -> TransportResult<PendingTransaction> {
+    ) -> Result<PendingTransaction, PendingTransactionError> {
         self.root().watch_pending_transaction(config).await
     }
 
@@ -517,6 +521,18 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
         self.client().request("eth_getTransactionByHash", (hash,)).await
     }
 
+    /// Returns the EIP-2718 encoded transaction if it exists, see also
+    /// [Decodable2718](alloy_eips::eip2718::Decodable2718).
+    ///
+    /// If the transaction is an EIP-4844 transaction that is still in the pool (pending) it will
+    /// include the sidecar, otherwise it will the consensus variant without the sidecar:
+    /// [TxEip4844](alloy_consensus::transaction::eip4844::TxEip4844).
+    ///
+    /// This can be decoded into [TxEnvelope](alloy_consensus::transaction::TxEnvelope).
+    async fn get_raw_transaction_by_hash(&self, hash: TxHash) -> TransportResult<Option<Bytes>> {
+        self.client().request("eth_getRawTransactionByHash", (hash,)).await
+    }
+
     /// Gets the transaction count (AKA "nonce") of the corresponding address.
     #[doc(alias = "get_nonce")]
     #[doc(alias = "get_account_nonce")]
@@ -534,7 +550,7 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     }
 
     /// Gets an uncle block through the tag [BlockId] and index [u64].
-    async fn get_uncle(&self, tag: BlockId, idx: u64) -> TransportResult<Option<Block>> {
+    async fn get_uncle(&self, tag: BlockId, idx: u64) -> TransportResult<Option<N::BlockResponse>> {
         let idx = U64::from(idx);
         match tag {
             BlockId::Hash(hash) => {
@@ -667,6 +683,10 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
         &self,
         tx: SendableTx<N>,
     ) -> TransportResult<PendingTransactionBuilder<'_, T, N>> {
+        // Make sure to initialize heartbeat before we submit transaction, so that
+        // we don't miss it if user will subscriber to it immediately after sending.
+        let _handle = self.root().get_heart();
+
         match tx {
             SendableTx::Builder(mut tx) => {
                 alloy_network::TransactionBuilder::prep_for_submission(&mut tx);
@@ -686,8 +706,8 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// # Errors
     ///
     /// This method is only available on `pubsub` clients, such as WebSockets or IPC, and will
-    /// return a [`PubsubUnavailable`](TransportErrorKind::PubsubUnavailable) transport error if the
-    /// client does not support it.
+    /// return a [`PubsubUnavailable`](alloy_transport::TransportErrorKind::PubsubUnavailable)
+    /// transport error if the client does not support it.
     ///
     /// For a polling alternative available over HTTP, use [`Provider::watch_blocks`].
     /// However, be aware that polling increases RPC usage drastically.
@@ -707,7 +727,9 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// # }
     /// ```
     #[cfg(feature = "pubsub")]
-    async fn subscribe_blocks(&self) -> TransportResult<alloy_pubsub::Subscription<Block>> {
+    async fn subscribe_blocks(
+        &self,
+    ) -> TransportResult<alloy_pubsub::Subscription<N::BlockResponse>> {
         self.root().pubsub_frontend()?;
         let id = self.client().request("eth_subscribe", ("newHeads",)).await?;
         self.root().get_subscription(id).await
@@ -718,8 +740,8 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// # Errors
     ///
     /// This method is only available on `pubsub` clients, such as WebSockets or IPC, and will
-    /// return a [`PubsubUnavailable`](TransportErrorKind::PubsubUnavailable) transport error if the
-    /// client does not support it.
+    /// return a [`PubsubUnavailable`](alloy_transport::TransportErrorKind::PubsubUnavailable)
+    /// transport error if the client does not support it.
     ///
     /// For a polling alternative available over HTTP, use [`Provider::watch_pending_transactions`].
     /// However, be aware that polling increases RPC usage drastically.
@@ -756,8 +778,8 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// # Errors
     ///
     /// This method is only available on `pubsub` clients, such as WebSockets or IPC, and will
-    /// return a [`PubsubUnavailable`](TransportErrorKind::PubsubUnavailable) transport error if the
-    /// client does not support it.
+    /// return a [`PubsubUnavailable`](alloy_transport::TransportErrorKind::PubsubUnavailable)
+    /// transport error if the client does not support it.
     ///
     /// For a polling alternative available over HTTP, use
     /// [`Provider::watch_full_pending_transactions`]. However, be aware that polling increases
@@ -791,8 +813,8 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// # Errors
     ///
     /// This method is only available on `pubsub` clients, such as WebSockets or IPC, and will
-    /// return a [`PubsubUnavailable`](TransportErrorKind::PubsubUnavailable) transport error if the
-    /// client does not support it.
+    /// return a [`PubsubUnavailable`](alloy_transport::TransportErrorKind::PubsubUnavailable)
+    /// transport error if the client does not support it.
     ///
     /// For a polling alternative available over HTTP, use
     /// [`Provider::watch_logs`]. However, be aware that polling increases
@@ -842,7 +864,7 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
 
     /// Cancels a subscription given the subscription ID.
     #[cfg(feature = "pubsub")]
-    async fn unsubscribe(&self, id: U256) -> TransportResult<()> {
+    async fn unsubscribe(&self, id: B256) -> TransportResult<()> {
         self.root().unsubscribe(id)
     }
 
@@ -889,6 +911,8 @@ pub trait Provider<T: Transport + Clone = BoxTransport, N: Network = Ethereum>:
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// [`PubsubUnavailable`]: alloy_transport::TransportErrorKind::PubsubUnavailable
     async fn raw_request<P, R>(&self, method: Cow<'static, str>, params: P) -> TransportResult<R>
     where
         P: RpcParam,
@@ -957,19 +981,37 @@ impl<T: Transport + Clone, N: Network> Provider<T, N> for RootProvider<T, N> {
     async fn watch_pending_transaction(
         &self,
         config: PendingTransactionConfig,
-    ) -> TransportResult<PendingTransaction> {
-        self.get_heart().watch_tx(config).await.map_err(|_| TransportErrorKind::backend_gone())
+    ) -> Result<PendingTransaction, PendingTransactionError> {
+        let block_number =
+            if let Some(receipt) = self.get_transaction_receipt(*config.tx_hash()).await? {
+                // The transaction is already confirmed.
+                if config.required_confirmations() <= 1 {
+                    return Ok(PendingTransaction::ready(*config.tx_hash()));
+                }
+                // Transaction has custom confirmations, so let the heart know about its block
+                // number and let it handle the situation.
+                receipt.block_number()
+            } else {
+                None
+            };
+
+        self.get_heart()
+            .watch_tx(config, block_number)
+            .await
+            .map_err(|_| PendingTransactionError::FailedToRegister)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::{builder, ProviderBuilder, WalletProvider};
     use alloy_network::AnyNetwork;
     use alloy_node_bindings::Anvil;
     use alloy_primitives::{address, b256, bytes, keccak256};
-    use alloy_rpc_types_eth::request::TransactionRequest;
+    use alloy_rpc_types_eth::{request::TransactionRequest, Block};
 
     fn init_tracing() {
         let _ = tracing_subscriber::fmt::try_init();
@@ -1046,7 +1088,10 @@ mod tests {
         let provider = ProviderBuilder::new().on_anvil_with_config(|a| a.block_time(1));
 
         let err = provider.subscribe_blocks().await.unwrap_err();
-        let alloy_json_rpc::RpcError::Transport(TransportErrorKind::PubsubUnavailable) = err else {
+        let alloy_json_rpc::RpcError::Transport(
+            alloy_transport::TransportErrorKind::PubsubUnavailable,
+        ) = err
+        else {
             panic!("{err:?}");
         };
     }
@@ -1063,7 +1108,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ws")]
+    #[cfg(all(feature = "ws", not(windows)))]
     #[tokio::test]
     async fn subscribe_blocks_ws() {
         use futures::stream::StreamExt;
@@ -1078,13 +1123,13 @@ mod tests {
         let mut stream = sub.into_stream().take(2);
         let mut n = 1;
         while let Some(block) = stream.next().await {
-            assert_eq!(block.header.number.unwrap(), n);
+            assert_eq!(block.header.number, n);
             assert_eq!(block.transactions.hashes().len(), 0);
             n += 1;
         }
     }
 
-    #[cfg(feature = "ws")]
+    #[cfg(all(feature = "ws", not(windows)))]
     #[tokio::test]
     async fn subscribe_blocks_ws_boxed() {
         use futures::stream::StreamExt;
@@ -1100,7 +1145,7 @@ mod tests {
         let mut stream = sub.into_stream().take(2);
         let mut n = 1;
         while let Some(block) = stream.next().await {
-            assert_eq!(block.header.number.unwrap(), n);
+            assert_eq!(block.header.number, n);
             assert_eq!(block.transactions.hashes().len(), 0);
             n += 1;
         }
@@ -1120,7 +1165,7 @@ mod tests {
         let mut stream = sub.into_stream().take(1);
         while let Some(block) = stream.next().await {
             println!("New block {:?}", block);
-            assert!(block.header.number.unwrap() > 0);
+            assert!(block.header.number > 0);
         }
     }
 
@@ -1145,6 +1190,54 @@ mod tests {
         let hash1 = *builder.tx_hash();
         let hash2 =
             builder.get_receipt().await.expect("failed to await pending tx").transaction_hash;
+        assert_eq!(hash1, hash2);
+    }
+
+    #[tokio::test]
+    async fn test_watch_confirmed_tx() {
+        init_tracing();
+        let provider = ProviderBuilder::new().on_anvil();
+        let tx = TransactionRequest {
+            value: Some(U256::from(100)),
+            to: Some(address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045").into()),
+            gas_price: Some(20e9 as u128),
+            gas: Some(21000),
+            ..Default::default()
+        };
+
+        let builder = provider.send_transaction(tx.clone()).await.expect("failed to send tx");
+        let hash1 = *builder.tx_hash();
+
+        // Wait until tx is confirmed.
+        loop {
+            if provider
+                .get_transaction_receipt(hash1)
+                .await
+                .expect("failed to await pending tx")
+                .is_some()
+            {
+                break;
+            }
+        }
+
+        // Submit another tx.
+        let tx2 = TransactionRequest {
+            value: Some(U256::from(100)),
+            to: Some(address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045").into()),
+            gas_price: Some(20e9 as u128),
+            gas: Some(21000),
+            ..Default::default()
+        };
+        provider.send_transaction(tx2).await.expect("failed to send tx").watch().await.unwrap();
+
+        // Only subscribe for watching _after_ tx was confirmed and we submitted a new one.
+        let watch = builder.watch();
+        // Wrap watch future in timeout to prevent it from hanging.
+        let watch_with_timeout = tokio::time::timeout(Duration::from_secs(1), watch);
+        let hash2 = watch_with_timeout
+            .await
+            .expect("Watching tx timed out")
+            .expect("failed to await pending tx");
         assert_eq!(hash1, hash2);
     }
 
@@ -1210,7 +1303,7 @@ mod tests {
         let num = 0;
         let tag: BlockNumberOrTag = num.into();
         let block = provider.get_block_by_number(tag, true).await.unwrap().unwrap();
-        assert_eq!(block.header.number.unwrap(), num);
+        assert_eq!(block.header.number, num);
     }
 
     #[tokio::test]
@@ -1220,7 +1313,7 @@ mod tests {
         let num = 0;
         let tag: BlockNumberOrTag = num.into();
         let block = provider.get_block_by_number(tag, true).await.unwrap().unwrap();
-        assert_eq!(block.header.number.unwrap(), num);
+        assert_eq!(block.header.number, num);
     }
 
     #[tokio::test]
@@ -1362,7 +1455,8 @@ mod tests {
     async fn gets_block_receipts() {
         init_tracing();
         let provider = ProviderBuilder::new().on_anvil();
-        let receipts = provider.get_block_receipts(BlockNumberOrTag::Latest).await.unwrap();
+        let receipts =
+            provider.get_block_receipts(BlockId::Number(BlockNumberOrTag::Latest)).await.unwrap();
         assert!(receipts.is_some());
     }
 

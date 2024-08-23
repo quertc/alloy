@@ -1,6 +1,6 @@
-use crate::{SignableTransaction, Signed, Transaction, TxType};
+use crate::{EncodableSignature, SignableTransaction, Signed, Transaction, TxType};
 use alloy_eips::eip2930::AccessList;
-use alloy_primitives::{keccak256, Bytes, ChainId, Signature, TxKind, U256};
+use alloy_primitives::{keccak256, Bytes, ChainId, Signature, TxKind, B256, U256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header};
 use core::mem;
 
@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 /// A transaction with a priority fee ([EIP-1559](https://eips.ethereum.org/EIPS/eip-1559)).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[doc(alias = "Eip1559Transaction", alias = "TransactionEip1559", alias = "Eip1559Tx")]
@@ -104,7 +105,7 @@ impl TxEip1559 {
     /// - `value`
     /// - `data` (`input`)
     /// - `access_list`
-    pub(crate) fn decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+    pub fn decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Ok(Self {
             chain_id: Decodable::decode(buf)?,
             nonce: Decodable::decode(buf)?,
@@ -152,11 +153,10 @@ impl TxEip1559 {
     ///
     /// If `with_header` is `true`, the payload length will include the RLP header length.
     /// If `with_header` is `false`, the payload length will not include the RLP header length.
-    pub(crate) fn encoded_len_with_signature(
-        &self,
-        signature: &Signature,
-        with_header: bool,
-    ) -> usize {
+    pub fn encoded_len_with_signature<S>(&self, signature: &S, with_header: bool) -> usize
+    where
+        S: EncodableSignature,
+    {
         // this counts the tx fields and signature fields
         let payload_length = self.fields_len() + signature.rlp_vrs_len();
 
@@ -179,12 +179,10 @@ impl TxEip1559 {
     /// Inner encoding function that is used for both rlp [`Encodable`] trait and for calculating
     /// hash that for eip2718 does not require a rlp header.
     #[doc(hidden)]
-    pub fn encode_with_signature(
-        &self,
-        signature: &Signature,
-        out: &mut dyn BufMut,
-        with_header: bool,
-    ) {
+    pub fn encode_with_signature<S>(&self, signature: &S, out: &mut dyn BufMut, with_header: bool)
+    where
+        S: EncodableSignature,
+    {
         let payload_length = self.fields_len() + signature.rlp_vrs_len();
         if with_header {
             Header {
@@ -231,7 +229,10 @@ impl TxEip1559 {
     /// tx type byte or string header.
     ///
     /// This __does__ encode a list header and include a signature.
-    pub(crate) fn encode_with_signature_fields(&self, signature: &Signature, out: &mut dyn BufMut) {
+    pub fn encode_with_signature_fields<S>(&self, signature: &S, out: &mut dyn BufMut)
+    where
+        S: EncodableSignature,
+    {
         let payload_length = self.fields_len() + signature.rlp_vrs_len();
         let header = Header { list: true, payload_length };
         header.encode(out);
@@ -277,6 +278,18 @@ impl Transaction for TxEip1559 {
         None
     }
 
+    fn max_fee_per_gas(&self) -> u128 {
+        self.max_fee_per_gas
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        Some(self.max_priority_fee_per_gas)
+    }
+
+    fn priority_fee_or_price(&self) -> u128 {
+        self.max_priority_fee_per_gas
+    }
+
     fn to(&self) -> TxKind {
         self.to
     }
@@ -287,6 +300,18 @@ impl Transaction for TxEip1559 {
 
     fn input(&self) -> &[u8] {
         &self.input
+    }
+
+    fn ty(&self) -> u8 {
+        TxType::Eip2930 as u8
+    }
+
+    fn access_list(&self) -> Option<&AccessList> {
+        Some(&self.access_list)
+    }
+
+    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
+        None
     }
 }
 
@@ -305,14 +330,16 @@ impl SignableTransaction<Signature> for TxEip1559 {
     }
 
     fn into_signed(self, signature: Signature) -> Signed<Self> {
+        // Drop any v chain id value to ensure the signature format is correct at the time of
+        // combination for an EIP-1559 transaction. V should indicate the y-parity of the
+        // signature.
+        let signature = signature.with_parity_bool();
+
         let mut buf = Vec::with_capacity(self.encoded_len_with_signature(&signature, false));
         self.encode_with_signature(&signature, &mut buf, false);
         let hash = keccak256(&buf);
 
-        // Drop any v chain id value to ensure the signature format is correct at the time of
-        // combination for an EIP-1559 transaction. V should indicate the y-parity of the
-        // signature.
-        Signed::new_unchecked(self, signature.with_parity_bool(), hash)
+        Signed::new_unchecked(self, signature, hash)
     }
 }
 

@@ -2,36 +2,22 @@
 //!
 //! [EIP-2930]: https://eips.ethereum.org/EIPS/eip-2930
 
-#![allow(unknown_lints, non_local_definitions)] // TODO: remove when proptest-derive updates
-
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use core::{mem, ops::Deref};
-
 /// A list of addresses and storage keys that the transaction plans to access.
 /// Accesses outside the list are possible, but become more expensive.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, RlpDecodable, RlpEncodable)]
-#[cfg_attr(
-    any(test, feature = "arbitrary"),
-    derive(proptest_derive::Arbitrary, arbitrary::Arbitrary)
-)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct AccessListItem {
     /// Account addresses that would be loaded at the start of execution
     pub address: Address,
     /// Keys of storage that would be loaded at the start of execution
-    #[cfg_attr(
-        any(test, feature = "arbitrary"),
-        proptest(
-            strategy = "proptest::collection::vec(proptest::arbitrary::any::<B256>(), 0..=20)"
-        )
-    )]
-    // In JSON, we have to accept `null` for storage key, which is interpreted as an empty array.
-    #[cfg_attr(feature = "serde", serde(deserialize_with = "alloy_serde::null_as_default"))]
     pub storage_keys: Vec<B256>,
 }
 
@@ -45,20 +31,9 @@ impl AccessListItem {
 
 /// AccessList as defined in EIP-2930
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, RlpDecodableWrapper, RlpEncodableWrapper)]
-#[cfg_attr(
-    any(test, feature = "arbitrary"),
-    derive(proptest_derive::Arbitrary, arbitrary::Arbitrary)
-)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct AccessList(
-    #[cfg_attr(
-        any(test, feature = "arbitrary"),
-        proptest(
-            strategy = "proptest::collection::vec(proptest::arbitrary::any::<AccessListItem>(), 0..=20)"
-        )
-    )]
-    pub Vec<AccessListItem>,
-);
+pub struct AccessList(pub Vec<AccessListItem>);
 
 impl From<Vec<AccessListItem>> for AccessList {
     fn from(list: Vec<AccessListItem>) -> Self {
@@ -166,25 +141,42 @@ pub struct AccessListWithGasUsed {
     pub gas_used: U256,
 }
 
+/// `AccessListResult` for handling errors from `eth_createAccessList`
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct AccessListResult {
+    /// List with accounts accessed during transaction.
+    pub access_list: AccessList,
+    /// Estimated gas used with access list.
+    pub gas_used: U256,
+    /// Optional error message if the transaction failed.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub error: Option<String>,
+}
+
+impl AccessListResult {
+    /// Ensures the result is OK, returning [`AccessListWithGasUsed`] if so, or an error message if
+    /// not.
+    pub fn ensure_ok(self) -> Result<AccessListWithGasUsed, String> {
+        match self.error {
+            Some(err) => Err(err),
+            None => {
+                Ok(AccessListWithGasUsed { access_list: self.access_list, gas_used: self.gas_used })
+            }
+        }
+    }
+
+    /// Checks if there is an error in the result.
+    #[inline]
+    pub const fn is_err(&self) -> bool {
+        self.error.is_some()
+    }
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-
-    #[test]
-    fn access_list_null_storage_keys() {
-        let json = json!([
-            {
-                "address": "0x81b7bdd5b89c90b63f604fc7cdd17035cb939707",
-                "storageKeys": null,
-            }
-        ]);
-
-        let access_list = serde_json::from_value::<AccessList>(json).unwrap();
-        assert_eq!(access_list.len(), 1);
-        assert_eq!(access_list[0].storage_keys, Vec::<B256>::default());
-    }
 
     #[test]
     fn access_list_serde() {
@@ -199,15 +191,16 @@ mod tests {
 
     #[test]
     fn access_list_with_gas_used() {
-        let list = AccessListWithGasUsed {
+        let list = AccessListResult {
             access_list: AccessList(vec![
                 AccessListItem { address: Address::ZERO, storage_keys: vec![B256::ZERO] },
                 AccessListItem { address: Address::ZERO, storage_keys: vec![B256::ZERO] },
             ]),
             gas_used: U256::from(100),
+            error: None,
         };
         let json = serde_json::to_string(&list).unwrap();
-        let list2 = serde_json::from_str::<AccessListWithGasUsed>(&json).unwrap();
+        let list2 = serde_json::from_str(&json).unwrap();
         assert_eq!(list, list2);
     }
 }

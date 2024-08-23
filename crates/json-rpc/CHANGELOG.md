@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/alloy-rs/alloy/releases/tag/v0.2.1) - 2024-08-02
+
+### Features
+
+- Add helper for decoding custom errors ([#1098](https://github.com/alloy-rs/alloy/issues/1098))
+- [json-rpc] Implement `From<u64> for Id` and `From<String> for Id` ([#1088](https://github.com/alloy-rs/alloy/issues/1088))
+
+### Miscellaneous Tasks
+
+- Release 0.2.0
+
+## [0.1.4](https://github.com/alloy-rs/alloy/releases/tag/v0.1.4) - 2024-07-08
+
+### Features
+
+- [transport] Retry layer ([#849](https://github.com/alloy-rs/alloy/issues/849))
+
+### Miscellaneous Tasks
+
+- Release 0.1.4
+
+## [0.1.3](https://github.com/alloy-rs/alloy/releases/tag/v0.1.3) - 2024-06-25
+
+### Miscellaneous Tasks
+
+- Release 0.1.3
+
 ## [0.1.2](https://github.com/alloy-rs/alloy/releases/tag/v0.1.2) - 2024-06-19
 
 ### Documentation

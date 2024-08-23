@@ -1,7 +1,5 @@
 //! [EIP-1898]: https://eips.ethereum.org/EIPS/eip-1898
 
-#![allow(unknown_lints, non_local_definitions)] // TODO: remove when proptest-derive updates
-
 use alloy_primitives::{hex::FromHexError, ruint::ParseError, BlockHash, BlockNumber, B256, U64};
 use alloy_rlp::{bytes, Decodable, Encodable, Error as RlpError};
 use core::{
@@ -387,6 +385,17 @@ impl From<BlockNumberOrTag> for BlockId {
     }
 }
 
+impl From<BlockHashOrNumber> for BlockId {
+    fn from(block: BlockHashOrNumber) -> Self {
+        match block {
+            BlockHashOrNumber::Hash(hash) => {
+                Self::Hash(RpcBlockHash { block_hash: hash, require_canonical: None })
+            }
+            BlockHashOrNumber::Number(num) => Self::Number(BlockNumberOrTag::Number(num)),
+        }
+    }
+}
+
 impl From<B256> for BlockId {
     fn from(block_hash: B256) -> Self {
         Self::Hash(RpcBlockHash { block_hash, require_canonical: None })
@@ -616,10 +625,7 @@ impl From<(BlockHash, BlockNumber)> for BlockNumHash {
 /// Either a block hash _or_ a block number
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    any(test, feature = "arbitrary"),
-    derive(proptest_derive::Arbitrary, arbitrary::Arbitrary)
-)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum BlockHashOrNumber {
     /// A block hash
     Hash(B256),

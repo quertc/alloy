@@ -8,6 +8,9 @@
 
 pub use alloy_serde as serde_helpers;
 
+mod rpc;
+pub use rpc::*;
+
 #[cfg(feature = "admin")]
 pub use alloy_rpc_types_admin as admin;
 
@@ -16,6 +19,9 @@ pub use alloy_rpc_types_anvil as anvil;
 
 #[cfg(feature = "beacon")]
 pub use alloy_rpc_types_beacon as beacon;
+
+#[cfg(feature = "debug")]
+pub use alloy_rpc_types_debug as debug;
 
 #[cfg(feature = "engine")]
 pub use alloy_rpc_types_engine as engine;

@@ -1,13 +1,17 @@
-use crate::{SignableTransaction, Signed, Transaction};
-use alloy_primitives::{keccak256, Bytes, ChainId, Signature, TxKind, U256};
-use alloy_rlp::{length_of_length, BufMut, Decodable, Encodable, Header, Result};
 use core::mem;
+
+use alloy_eips::eip2930::AccessList;
+use alloy_primitives::{keccak256, Bytes, ChainId, Signature, TxKind, B256, U256};
+use alloy_rlp::{length_of_length, BufMut, Decodable, Encodable, Header, Result};
+
+use crate::{EncodableSignature, SignableTransaction, Signed, Transaction, TxType};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 /// Legacy transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[doc(alias = "LegacyTransaction", alias = "TransactionLegacy", alias = "LegacyTx")]
@@ -103,11 +107,10 @@ impl TxLegacy {
     /// tx type byte or string header.
     ///
     /// This __does__ encode a list header and include a signature.
-    pub fn encode_with_signature_fields(
-        &self,
-        signature: &Signature,
-        out: &mut dyn alloy_rlp::BufMut,
-    ) {
+    pub fn encode_with_signature_fields<S>(&self, signature: &S, out: &mut dyn alloy_rlp::BufMut)
+    where
+        S: EncodableSignature,
+    {
         let payload_length = self.fields_len() + signature.rlp_vrs_len();
         let header = Header { list: true, payload_length };
         header.encode(out);
@@ -117,7 +120,10 @@ impl TxLegacy {
 
     /// Returns what the encoded length should be, if the transaction were RLP encoded with the
     /// given signature.
-    pub(crate) fn encoded_len_with_signature(&self, signature: &Signature) -> usize {
+    pub fn encoded_len_with_signature<S>(&self, signature: &S) -> usize
+    where
+        S: EncodableSignature,
+    {
         let payload_length = self.fields_len() + signature.rlp_vrs_len();
         Header { list: true, payload_length }.length() + payload_length
     }
@@ -214,6 +220,18 @@ impl Transaction for TxLegacy {
         Some(self.gas_price)
     }
 
+    fn max_fee_per_gas(&self) -> u128 {
+        self.gas_price
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        None
+    }
+
+    fn priority_fee_or_price(&self) -> u128 {
+        self.gas_price
+    }
+
     fn to(&self) -> TxKind {
         self.to
     }
@@ -224,6 +242,18 @@ impl Transaction for TxLegacy {
 
     fn input(&self) -> &[u8] {
         &self.input
+    }
+
+    fn ty(&self) -> u8 {
+        TxType::Legacy as u8
+    }
+
+    fn access_list(&self) -> Option<&AccessList> {
+        None
+    }
+
+    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
+        None
     }
 }
 
