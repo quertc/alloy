@@ -5,18 +5,22 @@
 )]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
-pub use alloy_eips::eip4895::Withdrawal;
+#[macro_use]
+extern crate alloc;
+
+pub use alloy_eips::eip4895::{Withdrawal, Withdrawals};
+
+pub use alloy_network_primitives::{
+    BlockTransactionHashes, BlockTransactions, BlockTransactionsKind,
+};
 
 mod account;
 pub use account::*;
 
 mod block;
 pub use block::*;
-
-pub use alloy_network_primitives::{
-    BlockTransactionHashes, BlockTransactions, BlockTransactionsKind,
-};
 
 mod call;
 pub use call::{Bundle, EthCallResponse, StateContext, TransactionIndex};
@@ -35,6 +39,7 @@ pub use index::Index;
 mod log;
 pub use log::*;
 
+#[cfg(feature = "serde")]
 pub mod pubsub;
 
 mod raw_log;
@@ -52,6 +57,10 @@ mod work;
 pub use work::Work;
 
 /// This module provides implementations for EIP-4337.
-pub mod eip4337;
+pub mod erc4337;
+pub use erc4337::{
+    PackedUserOperation, SendUserOperation, SendUserOperationResponse, UserOperation,
+    UserOperationGasEstimation, UserOperationReceipt,
+};
 
 pub mod simulate;

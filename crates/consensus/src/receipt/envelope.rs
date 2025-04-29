@@ -1,7 +1,15 @@
-use crate::{Receipt, ReceiptWithBloom, TxReceipt, TxType};
-use alloy_eips::eip2718::{Decodable2718, Eip2718Error, Eip2718Result, Encodable2718};
+use core::fmt;
+
+use crate::{Eip658Value, Receipt, ReceiptWithBloom, TxReceipt, TxType};
+use alloy_eips::{
+    eip2718::{
+        Decodable2718, Eip2718Error, Eip2718Result, Encodable2718, EIP1559_TX_TYPE_ID,
+        EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID, EIP7702_TX_TYPE_ID, LEGACY_TX_TYPE_ID,
+    },
+    Typed2718,
+};
 use alloy_primitives::{Bloom, Log};
-use alloy_rlp::{length_of_length, BufMut, Decodable, Encodable};
+use alloy_rlp::{BufMut, Decodable, Encodable};
 
 /// Receipt envelope, as defined in [EIP-2718].
 ///
@@ -16,35 +24,59 @@ use alloy_rlp::{length_of_length, BufMut, Decodable, Encodable};
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
-#[non_exhaustive]
 #[doc(alias = "TransactionReceiptEnvelope", alias = "TxReceiptEnvelope")]
 pub enum ReceiptEnvelope<T = Log> {
     /// Receipt envelope with no type flag.
     #[cfg_attr(feature = "serde", serde(rename = "0x0", alias = "0x00"))]
-    Legacy(ReceiptWithBloom<T>),
+    Legacy(ReceiptWithBloom<Receipt<T>>),
     /// Receipt envelope with type flag 1, containing a [EIP-2930] receipt.
     ///
     /// [EIP-2930]: https://eips.ethereum.org/EIPS/eip-2930
     #[cfg_attr(feature = "serde", serde(rename = "0x1", alias = "0x01"))]
-    Eip2930(ReceiptWithBloom<T>),
+    Eip2930(ReceiptWithBloom<Receipt<T>>),
     /// Receipt envelope with type flag 2, containing a [EIP-1559] receipt.
     ///
     /// [EIP-1559]: https://eips.ethereum.org/EIPS/eip-1559
     #[cfg_attr(feature = "serde", serde(rename = "0x2", alias = "0x02"))]
-    Eip1559(ReceiptWithBloom<T>),
+    Eip1559(ReceiptWithBloom<Receipt<T>>),
     /// Receipt envelope with type flag 2, containing a [EIP-4844] receipt.
     ///
     /// [EIP-4844]: https://eips.ethereum.org/EIPS/eip-4844
     #[cfg_attr(feature = "serde", serde(rename = "0x3", alias = "0x03"))]
-    Eip4844(ReceiptWithBloom<T>),
+    Eip4844(ReceiptWithBloom<Receipt<T>>),
     /// Receipt envelope with type flag 4, containing a [EIP-7702] receipt.
     ///
     /// [EIP-7702]: https://eips.ethereum.org/EIPS/eip-7702
     #[cfg_attr(feature = "serde", serde(rename = "0x4", alias = "0x04"))]
-    Eip7702(ReceiptWithBloom<T>),
+    Eip7702(ReceiptWithBloom<Receipt<T>>),
 }
 
 impl<T> ReceiptEnvelope<T> {
+    /// Converts the receipt's log type by applying a function to each log.
+    ///
+    /// Returns the receipt with the new log type.
+    pub fn map_logs<U>(self, f: impl FnMut(T) -> U) -> ReceiptEnvelope<U> {
+        match self {
+            Self::Legacy(r) => ReceiptEnvelope::Legacy(r.map_logs(f)),
+            Self::Eip2930(r) => ReceiptEnvelope::Eip2930(r.map_logs(f)),
+            Self::Eip1559(r) => ReceiptEnvelope::Eip1559(r.map_logs(f)),
+            Self::Eip4844(r) => ReceiptEnvelope::Eip4844(r.map_logs(f)),
+            Self::Eip7702(r) => ReceiptEnvelope::Eip7702(r.map_logs(f)),
+        }
+    }
+
+    /// Converts a [`ReceiptEnvelope`] with a custom log type into a [`ReceiptEnvelope`] with the
+    /// primitives [`Log`] type by converting the logs.
+    ///
+    /// This is useful if log types that embed the primitives log type, e.g. the log receipt rpc
+    /// type.
+    pub fn into_primitives_receipt(self) -> ReceiptEnvelope<Log>
+    where
+        T: Into<Log>,
+    {
+        self.map_logs(Into::into)
+    }
+
     /// Return the [`TxType`] of the inner receipt.
     #[doc(alias = "transaction_type")]
     pub const fn tx_type(&self) -> TxType {
@@ -68,7 +100,7 @@ impl<T> ReceiptEnvelope<T> {
     }
 
     /// Returns the cumulative gas used at this receipt.
-    pub fn cumulative_gas_used(&self) -> u128 {
+    pub fn cumulative_gas_used(&self) -> u64 {
         self.as_receipt().unwrap().cumulative_gas_used
     }
 
@@ -84,7 +116,19 @@ impl<T> ReceiptEnvelope<T> {
 
     /// Return the inner receipt with bloom. Currently this is infallible,
     /// however, future receipt types may be added.
-    pub const fn as_receipt_with_bloom(&self) -> Option<&ReceiptWithBloom<T>> {
+    pub const fn as_receipt_with_bloom(&self) -> Option<&ReceiptWithBloom<Receipt<T>>> {
+        match self {
+            Self::Legacy(t)
+            | Self::Eip2930(t)
+            | Self::Eip1559(t)
+            | Self::Eip4844(t)
+            | Self::Eip7702(t) => Some(t),
+        }
+    }
+
+    /// Return the mutable inner receipt with bloom. Currently this is
+    /// infallible, however, future receipt types may be added.
+    pub fn as_receipt_with_bloom_mut(&mut self) -> Option<&mut ReceiptWithBloom<Receipt<T>>> {
         match self {
             Self::Legacy(t)
             | Self::Eip2930(t)
@@ -107,9 +151,14 @@ impl<T> ReceiptEnvelope<T> {
     }
 }
 
-impl<T> TxReceipt<T> for ReceiptEnvelope<T> {
-    fn status_or_post_state(&self) -> &crate::Eip658Value {
-        &self.as_receipt().unwrap().status
+impl<T> TxReceipt for ReceiptEnvelope<T>
+where
+    T: Clone + fmt::Debug + PartialEq + Eq + Send + Sync,
+{
+    type Log = T;
+
+    fn status_or_post_state(&self) -> Eip658Value {
+        self.as_receipt().unwrap().status
     }
 
     fn status(&self) -> bool {
@@ -126,7 +175,7 @@ impl<T> TxReceipt<T> for ReceiptEnvelope<T> {
     }
 
     /// Returns the cumulative gas used at this receipt.
-    fn cumulative_gas_used(&self) -> u128 {
+    fn cumulative_gas_used(&self) -> u64 {
         self.as_receipt().unwrap().cumulative_gas_used
     }
 
@@ -158,11 +207,7 @@ impl Encodable for ReceiptEnvelope {
     }
 
     fn length(&self) -> usize {
-        let mut payload_length = self.rlp_payload_length();
-        if !self.is_legacy() {
-            payload_length += length_of_length(payload_length);
-        }
-        payload_length
+        self.network_len()
     }
 }
 
@@ -173,17 +218,19 @@ impl Decodable for ReceiptEnvelope {
     }
 }
 
-impl Encodable2718 for ReceiptEnvelope {
-    fn type_flag(&self) -> Option<u8> {
+impl Typed2718 for ReceiptEnvelope {
+    fn ty(&self) -> u8 {
         match self {
-            Self::Legacy(_) => None,
-            Self::Eip2930(_) => Some(TxType::Eip2930 as u8),
-            Self::Eip1559(_) => Some(TxType::Eip1559 as u8),
-            Self::Eip4844(_) => Some(TxType::Eip4844 as u8),
-            Self::Eip7702(_) => Some(TxType::Eip7702 as u8),
+            Self::Legacy(_) => LEGACY_TX_TYPE_ID,
+            Self::Eip2930(_) => EIP2930_TX_TYPE_ID,
+            Self::Eip1559(_) => EIP1559_TX_TYPE_ID,
+            Self::Eip4844(_) => EIP4844_TX_TYPE_ID,
+            Self::Eip7702(_) => EIP7702_TX_TYPE_ID,
         }
     }
+}
 
+impl Encodable2718 for ReceiptEnvelope {
     fn encode_2718_len(&self) -> usize {
         self.inner_length() + !self.is_legacy() as usize
     }
@@ -220,7 +267,7 @@ where
     T: arbitrary::Arbitrary<'a>,
 {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let receipt = ReceiptWithBloom::<T>::arbitrary(u)?;
+        let receipt = ReceiptWithBloom::<Receipt<T>>::arbitrary(u)?;
 
         match u.int_in_range(0..=3)? {
             0 => Ok(Self::Legacy(receipt)),
@@ -230,5 +277,176 @@ where
             4 => Ok(Self::Eip7702(receipt)),
             _ => unreachable!(),
         }
+    }
+}
+
+/// Bincode-compatible [`ReceiptEnvelope`] serde implementation.
+#[cfg(all(feature = "serde", feature = "serde-bincode-compat"))]
+pub(crate) mod serde_bincode_compat {
+    use crate::{Receipt, ReceiptWithBloom, TxType};
+    use alloc::borrow::Cow;
+    use alloy_primitives::{Bloom, Log, U8};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_with::{DeserializeAs, SerializeAs};
+
+    /// Bincode-compatible [`super::ReceiptEnvelope`] serde implementation.
+    ///
+    /// Intended to use with the [`serde_with::serde_as`] macro in the following way:
+    /// ```rust
+    /// use alloy_consensus::{serde_bincode_compat, ReceiptEnvelope};
+    /// use serde::{de::DeserializeOwned, Deserialize, Serialize};
+    /// use serde_with::serde_as;
+    ///
+    /// #[serde_as]
+    /// #[derive(Serialize, Deserialize)]
+    /// struct Data<T: Serialize + DeserializeOwned + Clone + 'static> {
+    ///     #[serde_as(as = "serde_bincode_compat::ReceiptEnvelope<'_, T>")]
+    ///     receipt: ReceiptEnvelope<T>,
+    /// }
+    /// ```
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct ReceiptEnvelope<'a, T: Clone = Log> {
+        #[serde(deserialize_with = "deserde_txtype")]
+        tx_type: TxType,
+        success: bool,
+        cumulative_gas_used: u64,
+        logs_bloom: Cow<'a, Bloom>,
+        logs: Cow<'a, [T]>,
+    }
+
+    /// Ensures that txtype is deserialized symmetrically as U8
+    fn deserde_txtype<'de, D>(deserializer: D) -> Result<TxType, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = U8::deserialize(deserializer)?;
+        value.to::<u8>().try_into().map_err(serde::de::Error::custom)
+    }
+
+    impl<'a, T: Clone> From<&'a super::ReceiptEnvelope<T>> for ReceiptEnvelope<'a, T> {
+        fn from(value: &'a super::ReceiptEnvelope<T>) -> Self {
+            Self {
+                tx_type: value.tx_type(),
+                success: value.status(),
+                cumulative_gas_used: value.cumulative_gas_used(),
+                logs_bloom: Cow::Borrowed(value.logs_bloom()),
+                logs: Cow::Borrowed(value.logs()),
+            }
+        }
+    }
+
+    impl<'a, T: Clone> From<ReceiptEnvelope<'a, T>> for super::ReceiptEnvelope<T> {
+        fn from(value: ReceiptEnvelope<'a, T>) -> Self {
+            let ReceiptEnvelope { tx_type, success, cumulative_gas_used, logs_bloom, logs } = value;
+            let receipt = ReceiptWithBloom {
+                receipt: Receipt {
+                    status: success.into(),
+                    cumulative_gas_used,
+                    logs: logs.into_owned(),
+                },
+                logs_bloom: logs_bloom.into_owned(),
+            };
+            match tx_type {
+                TxType::Legacy => Self::Legacy(receipt),
+                TxType::Eip2930 => Self::Eip2930(receipt),
+                TxType::Eip1559 => Self::Eip1559(receipt),
+                TxType::Eip4844 => Self::Eip4844(receipt),
+                TxType::Eip7702 => Self::Eip7702(receipt),
+            }
+        }
+    }
+
+    impl<T: Serialize + Clone> SerializeAs<super::ReceiptEnvelope<T>> for ReceiptEnvelope<'_, T> {
+        fn serialize_as<S>(
+            source: &super::ReceiptEnvelope<T>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            ReceiptEnvelope::<'_, T>::from(source).serialize(serializer)
+        }
+    }
+
+    impl<'de, T: Deserialize<'de> + Clone> DeserializeAs<'de, super::ReceiptEnvelope<T>>
+        for ReceiptEnvelope<'de, T>
+    {
+        fn deserialize_as<D>(deserializer: D) -> Result<super::ReceiptEnvelope<T>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            ReceiptEnvelope::<'_, T>::deserialize(deserializer).map(Into::into)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::{serde_bincode_compat, ReceiptEnvelope};
+        use alloy_primitives::Log;
+        use arbitrary::Arbitrary;
+        use bincode::config;
+        use rand::Rng;
+        use serde::{Deserialize, Serialize};
+        use serde_with::serde_as;
+
+        #[test]
+        fn test_receipt_evelope_bincode_roundtrip() {
+            #[serde_as]
+            #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+            struct Data {
+                #[serde_as(as = "serde_bincode_compat::ReceiptEnvelope<'_>")]
+                transaction: ReceiptEnvelope<Log>,
+            }
+
+            let mut bytes = [0u8; 1024];
+            rand::thread_rng().fill(bytes.as_mut_slice());
+            let mut data = Data {
+                transaction: ReceiptEnvelope::arbitrary(&mut arbitrary::Unstructured::new(&bytes))
+                    .unwrap(),
+            };
+
+            // ensure we have proper roundtrip data
+            data.transaction.as_receipt_with_bloom_mut().unwrap().receipt.status = true.into();
+
+            let encoded = bincode::serde::encode_to_vec(&data, config::legacy()).unwrap();
+            let (decoded, _) =
+                bincode::serde::decode_from_slice::<Data, _>(&encoded, config::legacy()).unwrap();
+            assert_eq!(decoded, data);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deser_pre658_receipt_envelope() {
+        use alloy_primitives::b256;
+
+        use crate::Receipt;
+
+        let receipt = super::ReceiptWithBloom::<Receipt<()>> {
+            receipt: super::Receipt {
+                status: super::Eip658Value::PostState(b256!(
+                    "284d35bf53b82ef480ab4208527325477439c64fb90ef518450f05ee151c8e10"
+                )),
+                cumulative_gas_used: 0,
+                logs: Default::default(),
+            },
+            logs_bloom: Default::default(),
+        };
+
+        let json = serde_json::to_string(&receipt).unwrap();
+
+        println!("Serialized {json}");
+
+        let receipt: super::ReceiptWithBloom<Receipt<()>> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            receipt.receipt.status,
+            super::Eip658Value::PostState(b256!(
+                "284d35bf53b82ef480ab4208527325477439c64fb90ef518450f05ee151c8e10"
+            ))
+        );
     }
 }

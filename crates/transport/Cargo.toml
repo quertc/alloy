@@ -13,27 +13,44 @@ exclude.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+rustdoc-args = [
+    "-Zunstable-options",
+    "--generate-link-to-definition",
+    "--show-type-layout",
+]
 
 [lints]
 workspace = true
 
 [dependencies]
 alloy-json-rpc.workspace = true
+alloy-primitives.workspace = true
 
 base64.workspace = true
-futures-util.workspace = true
 futures-utils-wasm.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 serde.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 tower.workspace = true
 url.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, features = ["rt", "time"] }
+governor = { version = "0.8.1", default-features = false, features = [
+    "std",
+    "quanta",
+], optional = true }
+futures.workspace = true
+parking_lot.workspace = true
+derive_more.workspace = true
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# non-WASM only
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt", "time","sync","macros"] }
+
+# WASM only
+[target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen-futures = { version = "0.4", optional = true }
+wasmtimer.workspace = true
 
 [features]
 wasm-bindgen = ["dep:wasm-bindgen-futures"]
+throttle = ["dep:governor"]

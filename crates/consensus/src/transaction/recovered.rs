@@ -1,0 +1,249 @@
+use alloy_eips::{
+    eip2718::{Encodable2718, WithEncoded},
+    Typed2718,
+};
+use alloy_primitives::{bytes, Address, Bytes, B256};
+use alloy_rlp::{Decodable, Encodable};
+use derive_more::{AsRef, Deref};
+
+/// Signed object with recovered signer.
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, AsRef, Deref)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Recovered<T> {
+    /// Signer of the type
+    signer: Address,
+    /// Signed object
+    #[deref]
+    #[as_ref]
+    #[cfg_attr(feature = "serde", serde(flatten))]
+    inner: T,
+}
+
+impl<T> Recovered<T> {
+    /// Signer of the object recovered from signature
+    pub const fn signer(&self) -> Address {
+        self.signer
+    }
+
+    /// Reference to the signer of the object recovered from signature
+    pub const fn signer_ref(&self) -> &Address {
+        &self.signer
+    }
+
+    /// Reference to the inner recovered object.
+    pub const fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    /// Reference to the inner recovered object.
+    pub fn inner_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+
+    /// Reference to the inner signed object.
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+
+    /// Clone the inner signed object.
+    pub fn clone_inner(&self) -> T
+    where
+        T: Clone,
+    {
+        self.inner.clone()
+    }
+
+    /// Returns a reference to the transaction.
+    #[doc(alias = "transaction")]
+    #[deprecated = "Use `inner` instead"]
+    pub const fn tx(&self) -> &T {
+        &self.inner
+    }
+
+    /// Transform back to the transaction.
+    #[doc(alias = "into_transaction")]
+    #[deprecated = "Use `into_inner` instead"]
+    pub fn into_tx(self) -> T {
+        self.inner
+    }
+
+    /// Clone the inner transaction.
+    #[doc(alias = "clone_transaction")]
+    #[deprecated = "Use `clone_inner` instead"]
+    pub fn clone_tx(&self) -> T
+    where
+        T: Clone,
+    {
+        self.inner.clone()
+    }
+
+    /// Dissolve Self to its component
+    #[doc(alias = "split")]
+    pub fn into_parts(self) -> (T, Address) {
+        (self.inner, self.signer)
+    }
+
+    /// Converts from `&Recovered<T>` to `Recovered<&T>`.
+    pub const fn as_recovered_ref(&self) -> Recovered<&T> {
+        Recovered { inner: &self.inner, signer: self.signer() }
+    }
+
+    /// Create [`Recovered`] from the given transaction and [`Address`] of the signer.
+    ///
+    /// Note: This does not check if the signer is the actual signer of the transaction.
+    #[inline]
+    pub const fn new_unchecked(inner: T, signer: Address) -> Self {
+        Self { inner, signer }
+    }
+
+    /// Converts the inner signed object to the given alternative that is `From<T>`
+    pub fn convert<Tx>(self) -> Recovered<Tx>
+    where
+        Tx: From<T>,
+    {
+        self.map(Tx::from)
+    }
+
+    /// Converts the transaction type to the given alternative that is `From<T>`
+    #[deprecated = "Use `convert_inner` instead"]
+    pub fn convert_transaction<Tx>(self) -> Recovered<Tx>
+    where
+        Tx: From<T>,
+    {
+        self.map(Tx::from)
+    }
+
+    /// Converts the inner signed object to the given alternative that is `TryFrom<T>`
+    pub fn try_convert<Tx, E>(self) -> Result<Recovered<Tx>, Tx::Error>
+    where
+        Tx: TryFrom<T>,
+    {
+        self.try_map(Tx::try_from)
+    }
+
+    /// Converts the transaction to the given alternative that is `TryFrom<T>`
+    #[deprecated = "Use `try_convert_inner` instead"]
+    pub fn try_convert_transaction<Tx, E>(self) -> Result<Recovered<Tx>, Tx::Error>
+    where
+        Tx: TryFrom<T>,
+    {
+        self.try_map(Tx::try_from)
+    }
+
+    /// Applies the given closure to the inner signed object.
+    pub fn map<Tx>(self, f: impl FnOnce(T) -> Tx) -> Recovered<Tx> {
+        Recovered::new_unchecked(f(self.inner), self.signer)
+    }
+
+    /// Applies the given closure to the inner transaction type.
+    #[deprecated = "Use `map_inner` instead"]
+    pub fn map_transaction<Tx>(self, f: impl FnOnce(T) -> Tx) -> Recovered<Tx> {
+        Recovered::new_unchecked(f(self.inner), self.signer)
+    }
+
+    /// Applies the given fallible closure to the inner signed object.
+    pub fn try_map<Tx, E>(self, f: impl FnOnce(T) -> Result<Tx, E>) -> Result<Recovered<Tx>, E> {
+        Ok(Recovered::new_unchecked(f(self.inner)?, self.signer))
+    }
+
+    /// Applies the given fallible closure to the inner transaction type.
+    #[deprecated = "Use `try_map_inner` instead"]
+    pub fn try_map_transaction<Tx, E>(
+        self,
+        f: impl FnOnce(T) -> Result<Tx, E>,
+    ) -> Result<Recovered<Tx>, E> {
+        Ok(Recovered::new_unchecked(f(self.inner)?, self.signer))
+    }
+
+    /// Returns the [`WithEncoded`] representation of [`Recovered`] with the given encoding.
+    pub fn into_encoded_with(self, encoding: impl Into<Bytes>) -> WithEncoded<Self> {
+        WithEncoded::new(encoding.into(), self)
+    }
+
+    /// Encodes the inner type and returns the [`WithEncoded`] representation of [`Recovered`].
+    pub fn into_encoded(self) -> WithEncoded<Self>
+    where
+        T: Encodable2718,
+    {
+        let mut out = alloc::vec![];
+        self.inner.encode_2718(&mut out);
+
+        self.into_encoded_with(out)
+    }
+}
+
+impl<T> Recovered<&T> {
+    /// Maps a `Recovered<&T>` to a `Recovered<T>` by cloning the transaction.
+    pub fn cloned(self) -> Recovered<T>
+    where
+        T: Clone,
+    {
+        let Self { inner, signer } = self;
+        Recovered::new_unchecked(inner.clone(), signer)
+    }
+}
+
+impl<T: Encodable> Encodable for Recovered<T> {
+    /// This encodes the transaction _with_ the signature, and an rlp header.
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        self.inner.encode(out)
+    }
+
+    fn length(&self) -> usize {
+        self.inner.length()
+    }
+}
+
+impl<T: Decodable + SignerRecoverable> Decodable for Recovered<T> {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let tx = T::decode(buf)?;
+        let signer = tx.recover_signer().map_err(|_| {
+            alloy_rlp::Error::Custom("Unable to recover decoded transaction signer.")
+        })?;
+        Ok(Self::new_unchecked(tx, signer))
+    }
+}
+
+impl<T: Typed2718> Typed2718 for Recovered<T> {
+    fn ty(&self) -> u8 {
+        self.inner.ty()
+    }
+}
+
+impl<T: Encodable2718> Encodable2718 for Recovered<T> {
+    fn encode_2718_len(&self) -> usize {
+        self.inner.encode_2718_len()
+    }
+
+    fn encode_2718(&self, out: &mut dyn alloy_rlp::BufMut) {
+        self.inner.encode_2718(out)
+    }
+
+    fn trie_hash(&self) -> B256 {
+        self.inner.trie_hash()
+    }
+}
+
+/// A type that can recover the signer of a transaction.
+///
+/// This is a helper trait that only provides the ability to recover the signer (address) of a
+/// transaction.
+pub trait SignerRecoverable {
+    /// Recover signer from signature and hash.
+    ///
+    /// Returns an error if the transaction's signature is invalid following [EIP-2](https://eips.ethereum.org/EIPS/eip-2).
+    ///
+    /// Note:
+    ///
+    /// This can fail for some early ethereum mainnet transactions pre EIP-2, use
+    /// [`Self::recover_signer_unchecked`] if you want to recover the signer without ensuring that
+    /// the signature has a low `s` value.
+    fn recover_signer(&self) -> Result<Address, alloy_primitives::SignatureError>;
+
+    /// Recover signer from signature and hash _without ensuring that the signature has a low `s`
+    /// value_.
+    ///
+    /// Returns an error if the transaction's signature is invalid.
+    fn recover_signer_unchecked(&self) -> Result<Address, alloy_primitives::SignatureError>;
+}

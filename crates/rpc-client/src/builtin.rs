@@ -1,9 +1,8 @@
+use alloy_json_rpc::RpcError;
+use alloy_transport::{BoxTransport, TransportConnect, TransportError, TransportErrorKind};
 use std::str::FromStr;
 
-use alloy_json_rpc::RpcError;
-use alloy_transport::{BoxTransport, BoxTransportConnect, TransportError, TransportErrorKind};
-
-#[cfg(feature = "pubsub")]
+#[cfg(any(feature = "ws", feature = "ipc"))]
 use alloy_pubsub::PubSubConnect;
 
 /// Connection string for built-in transports.
@@ -21,7 +20,7 @@ pub enum BuiltInConnectionString {
     Ipc(std::path::PathBuf),
 }
 
-impl BoxTransportConnect for BuiltInConnectionString {
+impl TransportConnect for BuiltInConnectionString {
     fn is_local(&self) -> bool {
         match self {
             #[cfg(any(feature = "reqwest", feature = "hyper"))]
@@ -40,10 +39,8 @@ impl BoxTransportConnect for BuiltInConnectionString {
         }
     }
 
-    fn get_boxed_transport<'a: 'b, 'b>(
-        &'a self,
-    ) -> alloy_transport::Pbf<'b, BoxTransport, TransportError> {
-        Box::pin(self.connect_boxed())
+    async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
+        self.connect_boxed().await
     }
 }
 
@@ -62,26 +59,23 @@ impl BuiltInConnectionString {
             // reqwest is enabled, hyper is not
             #[cfg(all(not(feature = "hyper"), feature = "reqwest"))]
             Self::Http(url) => {
-                Ok(
-                    alloy_transport::Transport::boxed(
-                        alloy_transport_http::Http::<reqwest::Client>::new(url.clone())
-                    )
-                )
-            },
+                Ok(alloy_transport::Transport::boxed(
+                    alloy_transport_http::Http::<reqwest::Client>::new(url.clone()),
+                ))
+            }
 
             // hyper is enabled, reqwest is not
             #[cfg(feature = "hyper")]
-            Self::Http(_) => Err(TransportErrorKind::custom_str(
-                "hyper not supported by BuiltinConnectionString. Please instantiate a hyper client manually",
+            Self::Http(url) => Ok(alloy_transport::Transport::boxed(
+                alloy_transport_http::HyperTransport::new_hyper(url.clone()),
             )),
 
-            #[cfg(all(not(target_arch = "wasm32"), feature = "ws"))]
-            Self::Ws(url, Some(auth)) => {
-                alloy_transport_ws::WsConnect::with_auth(url.clone(), Some(auth.clone()))
-                    .into_service()
-                    .await
-                    .map(alloy_transport::Transport::boxed)
-            }
+            #[cfg(all(not(target_family = "wasm"), feature = "ws"))]
+            Self::Ws(url, Some(auth)) => alloy_transport_ws::WsConnect::new(url.clone())
+                .with_auth(auth.clone())
+                .into_service()
+                .await
+                .map(alloy_transport::Transport::boxed),
 
             #[cfg(feature = "ws")]
             Self::Ws(url, _) => alloy_transport_ws::WsConnect::new(url.clone())
@@ -95,7 +89,12 @@ impl BuiltInConnectionString {
                 .await
                 .map(alloy_transport::Transport::boxed),
 
-            #[cfg(not(any(feature = "reqwest", feature = "hyper", feature = "ws", feature = "ipc")))]
+            #[cfg(not(any(
+                feature = "reqwest",
+                feature = "hyper",
+                feature = "ws",
+                feature = "ipc"
+            )))]
             _ => Err(TransportErrorKind::custom_str(
                 "No transports enabled. Enable one of: reqwest, hyper, ws, ipc",
             )),
@@ -126,7 +125,7 @@ impl BuiltInConnectionString {
     #[cfg(feature = "ws")]
     pub fn try_as_ws(s: &str) -> Result<Self, TransportError> {
         let url = if s.starts_with("localhost:") || s.parse::<std::net::SocketAddr>().is_ok() {
-            let s = format!("ws://{}", s);
+            let s = format!("ws://{s}");
             url::Url::parse(&s)
         } else {
             url::Url::parse(s)
@@ -167,8 +166,7 @@ impl FromStr for BuiltInConnectionString {
     #[allow(clippy::let_and_return)]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let res = Err(TransportErrorKind::custom_str(&format!(
-            "No transports enabled. Enable one of: reqwest, hyper, ws, ipc. Connection info: '{}'",
-            s
+            "No transports enabled. Enable one of: reqwest, hyper, ws, ipc. Connection info: '{s}'"
         )));
         #[cfg(any(feature = "reqwest", feature = "hyper"))]
         let res = res.or_else(|_| Self::try_as_http(s));
@@ -183,6 +181,7 @@ impl FromStr for BuiltInConnectionString {
 #[cfg(test)]
 mod test {
     use super::*;
+    use similar_asserts::assert_eq;
     use url::Url;
 
     #[test]
@@ -250,7 +249,8 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(feature = "ipc", not(windows)))]
+    #[cfg(feature = "ipc")]
+    #[cfg_attr(windows, ignore = "TODO: windows IPC")]
     fn test_parsing_ipc() {
         use alloy_node_bindings::Anvil;
 
@@ -262,12 +262,12 @@ mod test {
         let path_str = ipc_path.to_str().unwrap();
 
         assert_eq!(
-            BuiltInConnectionString::from_str(&format!("ipc://{}", path_str)).unwrap(),
+            BuiltInConnectionString::from_str(&format!("ipc://{path_str}")).unwrap(),
             BuiltInConnectionString::Ipc(ipc_path.clone())
         );
 
         assert_eq!(
-            BuiltInConnectionString::from_str(&format!("file://{}", path_str)).unwrap(),
+            BuiltInConnectionString::from_str(&format!("file://{path_str}")).unwrap(),
             BuiltInConnectionString::Ipc(ipc_path.clone())
         );
 

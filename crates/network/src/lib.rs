@@ -6,26 +6,34 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
-use alloy_consensus::TxReceipt;
+use alloy_consensus::{BlockHeader, TxReceipt};
 use alloy_eips::eip2718::{Eip2718Envelope, Eip2718Error};
 use alloy_json_rpc::RpcObject;
-use alloy_network_primitives::{BlockResponse, HeaderResponse};
+use alloy_network_primitives::HeaderResponse;
 use core::fmt::{Debug, Display};
 
 mod transaction;
 pub use transaction::{
-    BuildResult, NetworkWallet, TransactionBuilder, TransactionBuilderError, TxSigner,
+    BuildResult, FullSigner, FullSignerSync, NetworkWallet, TransactionBuilder,
+    TransactionBuilder4844, TransactionBuilder7702, TransactionBuilderError, TxSigner,
     TxSignerSync, UnbuiltTransactionError,
 };
 
 mod ethereum;
-pub use ethereum::{Ethereum, EthereumWallet};
+pub use ethereum::{Ethereum, EthereumWallet, IntoWallet};
 
-mod any;
-pub use any::{AnyNetwork, AnyTxType};
+/// Types for handling unknown network types.
+pub mod any;
+pub use any::{
+    AnyHeader, AnyNetwork, AnyReceiptEnvelope, AnyRpcBlock, AnyRpcHeader, AnyRpcTransaction,
+    AnyTransactionReceipt, AnyTxEnvelope, AnyTxType, AnyTypedTransaction, UnknownTxEnvelope,
+    UnknownTypedTransaction,
+};
 
 pub use alloy_eips::eip2718;
-pub use alloy_network_primitives::{self as primitives, ReceiptResponse, TransactionResponse};
+pub use alloy_network_primitives::{
+    self as primitives, BlockResponse, ReceiptResponse, TransactionResponse,
+};
 
 /// Captures type info for network-specific RPC requests/responses.
 ///
@@ -65,7 +73,7 @@ pub trait Network: Debug + Clone + Copy + Sized + Send + Sync + 'static {
     type ReceiptEnvelope: Eip2718Envelope + TxReceipt;
 
     /// The network header type.
-    type Header;
+    type Header: BlockHeader;
 
     // -- JSON RPC types --
 
@@ -79,16 +87,36 @@ pub trait Network: Debug + Clone + Copy + Sized + Send + Sync + 'static {
 
     /// The JSON body of a transaction response.
     #[doc(alias = "TxResponse")]
-    type TransactionResponse: RpcObject + TransactionResponse;
+    type TransactionResponse: RpcObject + TransactionResponse + AsRef<Self::TxEnvelope>;
 
     /// The JSON body of a transaction receipt.
     #[doc(alias = "TransactionReceiptResponse", alias = "TxReceiptResponse")]
     type ReceiptResponse: RpcObject + ReceiptResponse;
 
     /// The JSON body of a header response.
-    type HeaderResponse: RpcObject + HeaderResponse;
+    type HeaderResponse: RpcObject + HeaderResponse + AsRef<Self::Header>;
 
     /// The JSON body of a block response.
     type BlockResponse: RpcObject
         + BlockResponse<Transaction = Self::TransactionResponse, Header = Self::HeaderResponse>;
+}
+
+/// Utility to implement IntoWallet for signer over the specified network.
+#[macro_export]
+macro_rules! impl_into_wallet {
+    ($(@[$($generics:tt)*])? $signer:ty) => {
+        impl $(<$($generics)*>)? $crate::IntoWallet for $signer {
+            type NetworkWallet = $crate::EthereumWallet;
+            fn into_wallet(self) -> Self::NetworkWallet {
+                $crate::EthereumWallet::from(self)
+            }
+        }
+
+        impl $(<$($generics)*>)? $crate::IntoWallet<$crate::AnyNetwork> for $signer {
+            type NetworkWallet = $crate::EthereumWallet;
+            fn into_wallet(self) -> Self::NetworkWallet {
+                $crate::EthereumWallet::from(self)
+            }
+        }
+    };
 }

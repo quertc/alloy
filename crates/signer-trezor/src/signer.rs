@@ -1,7 +1,9 @@
 use super::types::{DerivationType, TrezorError};
 use alloy_consensus::{SignableTransaction, TxEip1559};
-use alloy_primitives::{hex, Address, ChainId, Parity, TxKind, B256, U256};
-use alloy_signer::{sign_transaction_with_chain_id, Result, Signature, Signer};
+use alloy_primitives::{
+    hex, normalize_v, Address, ChainId, Signature, SignatureError, TxKind, B256, U256,
+};
+use alloy_signer::{sign_transaction_with_chain_id, Result, Signer};
 use async_trait::async_trait;
 use std::fmt;
 use trezor_client::client::Trezor;
@@ -33,8 +35,8 @@ impl fmt::Debug for TrezorSigner {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl Signer for TrezorSigner {
     #[inline]
     async fn sign_hash(&self, _hash: &B256) -> Result<Signature> {
@@ -64,8 +66,8 @@ impl Signer for TrezorSigner {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl alloy_network::TxSigner<Signature> for TrezorSigner {
     fn address(&self) -> Address {
         self.address
@@ -80,6 +82,8 @@ impl alloy_network::TxSigner<Signature> for TrezorSigner {
         sign_transaction_with_chain_id!(self, tx, self.sign_tx_inner(tx).await)
     }
 }
+
+alloy_network::impl_into_wallet!(TrezorSigner);
 
 impl TrezorSigner {
     /// Instantiates a new Trezor signer.
@@ -170,13 +174,13 @@ impl TrezorSigner {
         let nonce = tx.nonce();
         let nonce = u64_to_trezor(nonce);
 
-        let gas_price = tx.gas_price().unwrap_or(0);
+        let gas_price = tx.max_fee_per_gas();
         let gas_price = u128_to_trezor(gas_price);
 
         let gas_limit = tx.gas_limit();
-        let gas_limit = u128_to_trezor(gas_limit);
+        let gas_limit = u64_to_trezor(gas_limit);
 
-        let to = match tx.to() {
+        let to = match tx.kind() {
             TxKind::Call(to) => address_to_trezor(&to),
             TxKind::Create => String::new(),
         };
@@ -187,7 +191,7 @@ impl TrezorSigner {
         let data = tx.input().to_vec();
         let chain_id = tx.chain_id();
 
-        // TODO: Uncomment once dyn trait upcasting is stable
+        // TODO(MSRV-1.86): Uncomment once dyn trait upcasting is stable
         /*
         let signature = if let Some(tx) = (tx as &dyn std::any::Any).downcast_ref::<TxEip1559>() {
         */
@@ -275,8 +279,9 @@ fn address_to_trezor(x: &Address) -> String {
 fn signature_from_trezor(x: trezor_client::client::Signature) -> Result<Signature, TrezorError> {
     let r = U256::from_be_bytes(x.r);
     let s = U256::from_be_bytes(x.s);
-    let v = Parity::Eip155(x.v);
-    Signature::from_rs_and_parity(r, s, v).map_err(Into::into)
+    let v =
+        normalize_v(x.v).ok_or(TrezorError::SignatureError(SignatureError::InvalidParity(x.v)))?;
+    Ok(Signature::new(r, s, v))
 }
 
 #[cfg(test)]

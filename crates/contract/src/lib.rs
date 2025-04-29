@@ -13,7 +13,7 @@ mod eth_call;
 pub use eth_call::{CallDecoder, EthCall};
 
 mod error;
-pub use error::*;
+pub use error::{Error, Result};
 
 mod event;
 pub use event::{Event, EventPoller};
@@ -30,11 +30,12 @@ pub use instance::*;
 mod call;
 pub use call::*;
 
+mod multicall;
+
 // Not public API.
 // NOTE: please avoid changing the API of this module due to its use in the `sol!` macro.
 #[doc(hidden)]
 pub mod private {
     pub use alloy_network::{Ethereum, Network};
     pub use alloy_provider::Provider;
-    pub use alloy_transport::Transport;
 }

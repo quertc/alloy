@@ -13,23 +13,40 @@ exclude.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+rustdoc-args = [
+	"-Zunstable-options",
+	"--generate-link-to-definition",
+	"--show-type-layout",
+]
 
 [lints]
 workspace = true
 
 [dependencies]
+# eips
+alloy-eip2124.workspace = true
+alloy-eip2930.workspace = true
+alloy-eip7702.workspace = true
+
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
+either.workspace = true
 
 # serde
 alloy-serde = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 # kzg
-c-kzg = { workspace = true, optional = true }
-derive_more = { workspace = true, features = ["as_ref", "deref", "deref_mut"], optional = true }
-once_cell = { workspace = true, features = ["race", "alloc"], optional = true }
+c-kzg = { workspace = true, optional = true, features = [
+	"ethereum_kzg_settings",
+] }
+derive_more = { workspace = true, features = [
+	"as_ref",
+	"deref",
+	"deref_mut",
+	"from",
+	"into_iterator",
+], default-features = false }
 sha2 = { workspace = true, optional = true }
 
 # ssz
@@ -39,29 +56,60 @@ ethereum_ssz = { workspace = true, optional = true }
 # arbitrary
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 
-# for signed authorization list arbitrary
-k256 = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
+# misc
+auto_impl.workspace = true
 
 [dev-dependencies]
-alloy-primitives = { workspace = true, features = ["rand", "serde", "arbitrary"] }
+alloy-primitives = { workspace = true, features = [
+	"rand",
+	"serde",
+	"arbitrary",
+] }
 arbitrary = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+rand.workspace = true
 
 [features]
 default = ["std", "kzg-sidecar"]
-std = ["alloy-primitives/std", "alloy-rlp/std", "serde?/std", "c-kzg?/std", "once_cell?/std"]
-serde = ["dep:alloy-serde", "dep:serde", "alloy-primitives/serde", "c-kzg?/serde"]
-kzg = ["kzg-sidecar", "sha2", "dep:derive_more", "dep:c-kzg", "dep:once_cell"]
+std = [
+	"alloy-primitives/std",
+	"alloy-rlp/std",
+	"serde?/std",
+	"c-kzg?/std",
+	"alloy-serde?/std",
+	"alloy-eip2124/std",
+	"alloy-eip2930/std",
+	"alloy-eip7702/std",
+	"derive_more/std",
+	"serde_json/std",
+	"sha2?/std",
+	"either/std",
+]
+serde = [
+	"dep:alloy-serde",
+	"dep:serde",
+	"alloy-primitives/serde",
+	"c-kzg?/serde",
+	"alloy-eip2930/serde",
+	"alloy-eip7702/serde",
+	"alloy-eip2124/serde",
+	"either/serde",
+	"rand/serde",
+]
+serde-bincode-compat = ["alloy-eip7702/serde-bincode-compat"]
+kzg = ["kzg-sidecar", "sha2", "dep:c-kzg"]
 kzg-sidecar = ["sha2"]
+k256 = ["alloy-eip7702/k256"]
 sha2 = ["dep:sha2"]
-k256 = ["alloy-primitives/k256", "dep:k256"]
-ssz = ["std", "dep:ethereum_ssz", "dep:ethereum_ssz_derive", "alloy-primitives/ssz"]
+ssz = ["std", "dep:ethereum_ssz", "dep:ethereum_ssz_derive"]
 arbitrary = [
-    "std",
-    "kzg-sidecar",
-    "dep:arbitrary",
-    "dep:rand",
-    "alloy-primitives/arbitrary",
-    "alloy-serde?/arbitrary",
+	"std",
+	"kzg-sidecar",
+	"dep:arbitrary",
+	"alloy-primitives/arbitrary",
+	"alloy-serde?/arbitrary",
+	"alloy-eip2124/arbitrary",
+	"alloy-eip2930/arbitrary",
+	"alloy-eip7702/arbitrary",
+	"alloy-eip7702/k256",
 ]

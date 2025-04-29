@@ -1,18 +1,17 @@
-use alloy_network::Ethereum;
+use crate::{Provider, ProviderLayer, RootProvider};
+use alloy_network::{Ethereum, Network};
 use alloy_node_bindings::{Anvil, AnvilInstance};
-use alloy_transport::Transport;
 use reqwest::Url;
 use std::{
     marker::PhantomData,
     sync::{Arc, OnceLock},
 };
 
-use crate::{Provider, ProviderLayer, RootProvider};
-
-/// A layer that wraps an [`Anvil`] config. The config will be used
-/// to spawn an [`AnvilInstance`] when the layer is applied, or when the user
-/// requests any information about the anvil node (e.g. via the
-/// [`AnvilLayer::ws_endpoint_url`] method ).
+/// A layer that wraps an [`Anvil`] config.
+///
+/// The config will be used to spawn an [`AnvilInstance`] when the layer is applied, or when the
+/// user requests any information about the anvil node (e.g. via the [`AnvilLayer::ws_endpoint_url`]
+/// method).
 #[derive(Debug, Clone, Default)]
 pub struct AnvilLayer {
     anvil: Anvil,
@@ -43,12 +42,8 @@ impl From<Anvil> for AnvilLayer {
     }
 }
 
-impl<P, T> ProviderLayer<P, T, Ethereum> for AnvilLayer
-where
-    P: Provider<T>,
-    T: Transport + Clone,
-{
-    type Provider = AnvilProvider<P, T>;
+impl<P: Provider<N>, N: Network> ProviderLayer<P, N> for AnvilLayer {
+    type Provider = AnvilProvider<P, N>;
 
     fn layer(&self, inner: P) -> Self::Provider {
         let anvil = self.instance();
@@ -59,31 +54,29 @@ where
 /// A provider that wraps an [`AnvilInstance`], preventing the instance from
 /// being dropped while the provider is in use.
 #[derive(Clone, Debug)]
-pub struct AnvilProvider<P, T> {
+pub struct AnvilProvider<P, N = Ethereum> {
     inner: P,
-    _anvil: Arc<AnvilInstance>,
-    _pd: PhantomData<fn() -> T>,
+    anvil: Arc<AnvilInstance>,
+    _marker: PhantomData<N>,
 }
 
-impl<P, T> AnvilProvider<P, T>
-where
-    P: Provider<T>,
-    T: Transport + Clone,
-{
+impl<P: Provider<N>, N: Network> AnvilProvider<P, N> {
     /// Creates a new `AnvilProvider` with the given inner provider and anvil
     /// instance.
-    pub fn new(inner: P, _anvil: Arc<AnvilInstance>) -> Self {
-        Self { inner, _anvil, _pd: PhantomData }
+    #[expect(clippy::missing_const_for_fn)]
+    pub fn new(inner: P, anvil: Arc<AnvilInstance>) -> Self {
+        Self { inner, anvil, _marker: PhantomData }
+    }
+
+    /// Expose inner anvil instance.
+    pub fn anvil(&self) -> &Arc<AnvilInstance> {
+        &self.anvil
     }
 }
 
-impl<P, T> Provider<T> for AnvilProvider<P, T>
-where
-    P: Provider<T>,
-    T: Transport + Clone,
-{
+impl<P: Provider<N>, N: Network> Provider<N> for AnvilProvider<P, N> {
     #[inline(always)]
-    fn root(&self) -> &RootProvider<T> {
+    fn root(&self) -> &RootProvider<N> {
         self.inner.root()
     }
 }

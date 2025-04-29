@@ -2,8 +2,8 @@
 
 use crate::types::{DerivationType, LedgerError, INS, P1, P1_FIRST, P2};
 use alloy_consensus::SignableTransaction;
-use alloy_primitives::{hex, Address, ChainId, B256};
-use alloy_signer::{sign_transaction_with_chain_id, Result, Signature, Signer};
+use alloy_primitives::{hex, normalize_v, Address, ChainId, Signature, SignatureError, B256};
+use alloy_signer::{sign_transaction_with_chain_id, Result, Signer};
 use async_trait::async_trait;
 use coins_ledger::{
     common::{APDUCommand, APDUData},
@@ -30,8 +30,14 @@ pub struct LedgerSigner {
     pub(crate) address: Address,
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+// Required for IntoSigner
+#[cfg(target_family = "wasm")]
+unsafe impl Send for LedgerSigner {}
+#[cfg(target_family = "wasm")]
+unsafe impl Sync for LedgerSigner {}
+
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl alloy_network::TxSigner<Signature> for LedgerSigner {
     fn address(&self) -> Address {
         self.address
@@ -43,12 +49,42 @@ impl alloy_network::TxSigner<Signature> for LedgerSigner {
         &self,
         tx: &mut dyn SignableTransaction<Signature>,
     ) -> Result<Signature> {
-        sign_transaction_with_chain_id!(self, tx, self.sign_tx_rlp(&tx.encoded_for_signing()).await)
+        let encoded = tx.encoded_for_signing();
+
+        match encoded.as_slice() {
+            // Ledger requires passing EIP712 data to a separate instruction
+            #[cfg(feature = "eip712")]
+            [0x19, 0x1, data @ ..] => {
+                let domain_sep = data
+                    .get(..32)
+                    .ok_or_else(|| {
+                        alloy_signer::Error::other(
+                            "eip712 encoded data did not have a domain separator",
+                        )
+                    })
+                    .map(B256::from_slice)?;
+
+                let hash = data[32..]
+                    .get(..32)
+                    .ok_or_else(|| {
+                        alloy_signer::Error::other("eip712 encoded data did not have hash struct")
+                    })
+                    .map(B256::from_slice)?;
+
+                sign_transaction_with_chain_id!(
+                    self,
+                    tx,
+                    self.sign_typed_data_with_separator(&hash, &domain_sep).await
+                )
+            }
+            // Usual flow
+            encoded => sign_transaction_with_chain_id!(self, tx, self.sign_tx_rlp(encoded).await),
+        }
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl Signer for LedgerSigner {
     async fn sign_hash(&self, _hash: &B256) -> Result<Signature> {
         Err(alloy_signer::Error::UnsupportedOperation(
@@ -102,6 +138,8 @@ impl Signer for LedgerSigner {
         self.chain_id = chain_id;
     }
 }
+
+alloy_network::impl_into_wallet!(LedgerSigner);
 
 impl LedgerSigner {
     /// Instantiate the application by acquiring a lock on the ledger device.
@@ -208,10 +246,10 @@ impl LedgerSigner {
     }
 
     #[cfg(feature = "eip712")]
-    async fn sign_typed_data_(
+    async fn sign_typed_data_with_separator(
         &self,
         hash_struct: &B256,
-        domain: &Eip712Domain,
+        separator: &B256,
     ) -> Result<Signature, LedgerError> {
         // See comment for v1.6.0 requirement
         // https://github.com/LedgerHQ/app-ethereum/issues/105#issuecomment-765316999
@@ -225,10 +263,19 @@ impl LedgerSigner {
         }
 
         let mut data = Self::path_to_bytes(&self.derivation);
-        data.extend_from_slice(domain.separator().as_slice());
+        data.extend_from_slice(separator.as_slice());
         data.extend_from_slice(hash_struct.as_slice());
 
         self.sign_payload(INS::SIGN_ETH_EIP_712, &data).await
+    }
+
+    #[cfg(feature = "eip712")]
+    async fn sign_typed_data_(
+        &self,
+        hash_struct: &B256,
+        domain: &Eip712Domain,
+    ) -> Result<Signature, LedgerError> {
+        self.sign_typed_data_with_separator(hash_struct, &domain.separator()).await
     }
 
     /// Helper function for signing either transaction data, personal messages or EIP712 derived
@@ -274,7 +321,9 @@ impl LedgerSigner {
             return Err(LedgerError::ShortResponse { got: data.len(), expected: 65 });
         }
 
-        let sig = Signature::from_bytes_and_parity(&data[1..], data[0] as u64)?;
+        let parity = normalize_v(data[0] as u64)
+            .ok_or(LedgerError::SignatureError(SignatureError::InvalidParity(data[0] as u64)))?;
+        let sig = Signature::from_bytes_and_parity(&data[1..], parity);
         debug!(?sig, "Received signature from device");
         Ok(sig)
     }

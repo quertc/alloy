@@ -26,7 +26,7 @@ cargo add alloy --features full
 Alternatively, you can add the following to your `Cargo.toml` file:
 
 ```toml
-alloy = { version = "0.2", features = ["full"] }
+alloy = { version = "0.12", features = ["full"] }
 ```
 
 For a more fine-grained control over the features you wish to include, you can add the individual crates to your `Cargo.toml` file, or use the `alloy` crate with the features you need.
@@ -39,6 +39,7 @@ This repository contains the following crates:
 
 - [`alloy`]: Meta-crate for the entire project, including [`alloy-core`]
 - [`alloy-consensus`] - Ethereum consensus interface
+  - [`alloy-consensus-any`] - Catch-all consensus interface for multiple networks
 - [`alloy-contract`] - Interact with on-chain contracts
 - [`alloy-eips`] - Ethereum Improvement Proposal (EIP) implementations
 - [`alloy-genesis`] - Ethereum genesis file definitions
@@ -52,6 +53,7 @@ This repository contains the following crates:
 - [`alloy-rpc-types`] - Meta-crate for all Ethereum JSON-RPC types
   - [`alloy-rpc-types-admin`] - Types for the `admin` Ethereum JSON-RPC namespace
   - [`alloy-rpc-types-anvil`] - Types for the [Anvil] development node's Ethereum JSON-RPC namespace
+  - [`alloy-rpc-types-any`] - Types for JSON-RPC namespaces across multiple networks
   - [`alloy-rpc-types-beacon`] - Types for the [Ethereum Beacon Node API][beacon-apis]
   - [`alloy-rpc-types-debug`] - Types for the `debug` Ethereum JSON-RPC namespace
   - [`alloy-rpc-types-engine`] - Types for the `engine` Ethereum JSON-RPC namespace
@@ -74,6 +76,7 @@ This repository contains the following crates:
 [`alloy`]: https://github.com/alloy-rs/alloy/tree/main/crates/alloy
 [`alloy-core`]: https://docs.rs/alloy-core
 [`alloy-consensus`]: https://github.com/alloy-rs/alloy/tree/main/crates/consensus
+[`alloy-consensus-any`]: https://github.com/alloy-rs/alloy/tree/main/crates/consensus-any
 [`alloy-contract`]: https://github.com/alloy-rs/alloy/tree/main/crates/contract
 [`alloy-eips`]: https://github.com/alloy-rs/alloy/tree/main/crates/eips
 [`alloy-genesis`]: https://github.com/alloy-rs/alloy/tree/main/crates/genesis
@@ -87,7 +90,9 @@ This repository contains the following crates:
 [`alloy-rpc-types`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types
 [`alloy-rpc-types-admin`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-admin
 [`alloy-rpc-types-anvil`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-anvil
+[`alloy-rpc-types-any`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-any
 [`alloy-rpc-types-beacon`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-beacon
+[`alloy-rpc-types-debug`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-debug
 [`alloy-rpc-types-engine`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-engine
 [`alloy-rpc-types-eth`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-eth
 [`alloy-rpc-types-mev`]: https://github.com/alloy-rs/alloy/tree/main/crates/rpc-types-mev
@@ -104,7 +109,6 @@ This repository contains the following crates:
 [`alloy-transport-http`]: https://github.com/alloy-rs/alloy/tree/main/crates/transport-http
 [`alloy-transport-ipc`]: https://github.com/alloy-rs/alloy/tree/main/crates/transport-ipc
 [`alloy-transport-ws`]: https://github.com/alloy-rs/alloy/tree/main/crates/transport-ws
-
 [publish-subscribe]: https://en.wikipedia.org/wiki/Publish%E2%80%93subscribe_pattern
 [AWS KMS]: https://aws.amazon.com/kms
 [GCP KMS]: https://cloud.google.com/kms
@@ -123,7 +127,7 @@ When updating this, also update:
 - .github/workflows/ci.yml
 -->
 
-The current MSRV (minimum supported rust version) is 1.76.
+The current MSRV (minimum supported rust version) is 1.82.
 
 Alloy will keep a rolling MSRV policy of **at least** two versions behind the
 latest stable release (so if the latest stable release is 1.58, we would

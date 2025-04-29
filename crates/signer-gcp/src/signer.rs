@@ -1,6 +1,6 @@
 use alloy_consensus::SignableTransaction;
-use alloy_primitives::{hex, Address, ChainId, B256};
-use alloy_signer::{sign_transaction_with_chain_id, Result, Signature, Signer};
+use alloy_primitives::{hex, Address, ChainId, Signature, B256};
+use alloy_signer::{sign_transaction_with_chain_id, Result, Signer};
 use async_trait::async_trait;
 use gcloud_sdk::{
     google::cloud::kms::{
@@ -145,8 +145,8 @@ pub enum GcpSignerError {
     K256(#[from] ecdsa::Error),
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl alloy_network::TxSigner<Signature> for GcpSigner {
     fn address(&self) -> Address {
         self.address
@@ -162,8 +162,8 @@ impl alloy_network::TxSigner<Signature> for GcpSigner {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl Signer for GcpSigner {
     #[instrument(err)]
     #[allow(clippy::blocks_in_conditions)]
@@ -186,6 +186,8 @@ impl Signer for GcpSigner {
         self.chain_id = chain_id;
     }
 }
+
+alloy_network::impl_into_wallet!(GcpSigner);
 
 impl GcpSigner {
     /// Instantiate a new signer from an existing `Client`, keyring reference, key ID, and version.
@@ -220,11 +222,7 @@ impl GcpSigner {
     #[instrument(err, skip(digest), fields(digest = %hex::encode(digest)))]
     async fn sign_digest_inner(&self, digest: &B256) -> Result<Signature, GcpSignerError> {
         let sig = self.sign_digest(digest).await?;
-        let mut sig = sig_from_digest_bytes_trial_recovery(sig, digest, &self.pubkey);
-        if let Some(chain_id) = self.chain_id {
-            sig = sig.with_chain_id(chain_id);
-        }
-        Ok(sig)
+        Ok(sig_from_digest_bytes_trial_recovery(sig, digest, &self.pubkey))
     }
 }
 
@@ -233,7 +231,11 @@ async fn request_get_pubkey(
     client: &Client,
     kms_key_name: &str,
 ) -> Result<PublicKey, GcpSignerError> {
-    let mut request = tonic::Request::new(GetPublicKeyRequest { name: kms_key_name.to_string() });
+    let mut request = tonic::Request::new(GetPublicKeyRequest {
+        name: kms_key_name.to_string(),
+        // When not specified, the default will be used.
+        public_key_format: Default::default(),
+    });
     request
         .metadata_mut()
         .insert("x-goog-request-params", format!("name={}", &kms_key_name).parse().unwrap());
@@ -257,7 +259,7 @@ async fn request_sign_digest(
     // Add metadata for request routing: https://cloud.google.com/kms/docs/grpc
     request
         .metadata_mut()
-        .insert("x-goog-request-params", format!("name={}", kms_key_name).parse().unwrap());
+        .insert("x-goog-request-params", format!("name={kms_key_name}").parse().unwrap());
 
     let response = client.get().asymmetric_sign(request).await?;
     let signature = response.into_inner().signature;
@@ -281,7 +283,7 @@ fn sig_from_digest_bytes_trial_recovery(
     hash: &B256,
     pubkey: &VerifyingKey,
 ) -> Signature {
-    let signature = Signature::from_signature_and_parity(sig, false).unwrap();
+    let signature = Signature::from_signature_and_parity(sig, false);
     if check_candidate(&signature, hash, pubkey) {
         return signature;
     }

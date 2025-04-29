@@ -1,10 +1,11 @@
-use crate::{ErrorPayload, Id, Response, SerializedRequest};
+use crate::{ErrorPayload, Id, Response, ResponsePayload, SerializedRequest};
+use alloy_primitives::map::HashSet;
 use serde::{
     de::{self, Deserializer, MapAccess, SeqAccess, Visitor},
     Deserialize, Serialize,
 };
 use serde_json::value::RawValue;
-use std::{collections::HashSet, fmt, marker::PhantomData};
+use std::{fmt, marker::PhantomData};
 
 /// A [`RequestPacket`] is a [`SerializedRequest`] or a batch of serialized
 /// request.
@@ -46,6 +47,22 @@ impl RequestPacket {
         Self::Batch(Vec::with_capacity(capacity))
     }
 
+    /// Returns the [`SerializedRequest`] if this packet is [`ResponsePacket::Single`]
+    pub const fn as_single(&self) -> Option<&SerializedRequest> {
+        match self {
+            Self::Single(req) => Some(req),
+            Self::Batch(_) => None,
+        }
+    }
+
+    /// Returns the batch of [`SerializedRequest`] if this packet is [`ResponsePacket::Batch`]
+    pub fn as_batch(&self) -> Option<&[SerializedRequest]> {
+        match self {
+            Self::Batch(req) => Some(req.as_slice()),
+            Self::Single(_) => None,
+        }
+    }
+
     /// Serialize the packet as a boxed [`RawValue`].
     pub fn serialize(self) -> serde_json::Result<Box<RawValue>> {
         match self {
@@ -58,11 +75,8 @@ impl RequestPacket {
     pub fn subscription_request_ids(&self) -> HashSet<&Id> {
         match self {
             Self::Single(single) => {
-                let mut hs = HashSet::with_capacity(1);
-                if single.method() == "eth_subscribe" {
-                    hs.insert(single.id());
-                }
-                hs
+                let id = (single.method() == "eth_subscribe").then(|| single.id());
+                HashSet::from_iter(id)
             }
             Self::Batch(batch) => batch
                 .iter()
@@ -87,20 +101,29 @@ impl RequestPacket {
 
     /// Push a request into the packet.
     pub fn push(&mut self, req: SerializedRequest) {
-        if let Self::Batch(batch) = self {
-            batch.push(req);
-            return;
-        }
-        if matches!(self, Self::Single(_)) {
-            let old = std::mem::replace(self, Self::Batch(Vec::with_capacity(10)));
-            match old {
-                Self::Single(single) => {
+        match self {
+            Self::Batch(batch) => batch.push(req),
+            Self::Single(_) => {
+                let old = std::mem::replace(self, Self::Batch(Vec::with_capacity(10)));
+                if let Self::Single(single) = old {
                     self.push(single);
                 }
-                _ => unreachable!(),
+                self.push(req);
             }
-            self.push(req);
         }
+    }
+
+    /// Returns a all [`SerializedRequest`].
+    pub fn requests(&self) -> &[SerializedRequest] {
+        match self {
+            Self::Single(req) => std::slice::from_ref(req),
+            Self::Batch(req) => req.as_slice(),
+        }
+    }
+
+    /// Returns an iterator over the requests' method names
+    pub fn method_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.requests().iter().map(|req| req.method())
     }
 }
 
@@ -194,9 +217,10 @@ where
     }
 }
 
-/// A [`BorrowedResponsePacket`] is a [`ResponsePacket`] that has been partially
-/// deserialized, borrowing its contents from the deserializer. This is used
-/// primarily for intermediate deserialization. Most users will not require it.
+/// A [`BorrowedResponsePacket`] is a [`ResponsePacket`] that has been partially deserialized,
+/// borrowing its contents from the deserializer.
+///
+/// This is used primarily for intermediate deserialization. Most users will not require it.
 ///
 /// See the [top-level docs] for more info.
 ///
@@ -217,6 +241,27 @@ impl BorrowedResponsePacket<'_> {
 }
 
 impl<Payload, ErrData> ResponsePacket<Payload, ErrData> {
+    /// Returns the [`Response`] if this packet is [`ResponsePacket::Single`].
+    pub const fn as_single(&self) -> Option<&Response<Payload, ErrData>> {
+        match self {
+            Self::Single(resp) => Some(resp),
+            Self::Batch(_) => None,
+        }
+    }
+
+    /// Returns the batch of [`Response`] if this packet is [`ResponsePacket::Batch`].
+    pub fn as_batch(&self) -> Option<&[Response<Payload, ErrData>]> {
+        match self {
+            Self::Batch(resp) => Some(resp.as_slice()),
+            Self::Single(_) => None,
+        }
+    }
+
+    /// Returns the [`ResponsePayload`] if this packet is [`ResponsePacket::Single`].
+    pub fn single_payload(&self) -> Option<&ResponsePayload<Payload, ErrData>> {
+        self.as_single().map(|resp| &resp.payload)
+    }
+
     /// Returns `true` if the response payload is a success.
     ///
     /// For batch responses, this returns `true` if __all__ responses are successful.
@@ -252,6 +297,44 @@ impl<Payload, ErrData> ResponsePacket<Payload, ErrData> {
         }
     }
 
+    /// Returns the first error code in this packet if it contains any error responses.
+    pub fn first_error_code(&self) -> Option<i64> {
+        self.as_error().map(|error| error.code)
+    }
+
+    /// Returns the first error message in this packet if it contains any error responses.
+    pub fn first_error_message(&self) -> Option<&str> {
+        self.as_error().map(|error| error.message.as_ref())
+    }
+
+    /// Returns the first error data in this packet if it contains any error responses.
+    pub fn first_error_data(&self) -> Option<&ErrData> {
+        self.as_error().and_then(|error| error.data.as_ref())
+    }
+
+    /// Returns a all [`Response`].
+    pub fn responses(&self) -> &[Response<Payload, ErrData>] {
+        match self {
+            Self::Single(req) => std::slice::from_ref(req),
+            Self::Batch(req) => req.as_slice(),
+        }
+    }
+
+    /// Returns an iterator over the responses' payloads.
+    pub fn payloads(&self) -> impl Iterator<Item = &ResponsePayload<Payload, ErrData>> + '_ {
+        self.responses().iter().map(|resp| &resp.payload)
+    }
+
+    /// Returns the first [`ResponsePayload`] in this packet.
+    pub fn first_payload(&self) -> Option<&ResponsePayload<Payload, ErrData>> {
+        self.payloads().next()
+    }
+
+    /// Returns an iterator over the responses' identifiers.
+    pub fn response_ids(&self) -> impl Iterator<Item = &Id> + '_ {
+        self.responses().iter().map(|resp| &resp.id)
+    }
+
     /// Find responses by a list of IDs.
     ///
     /// This is intended to be used in conjunction with
@@ -265,14 +348,9 @@ impl<Payload, ErrData> ResponsePacket<Payload, ErrData> {
     /// - If the packet contains duplicate IDs, both will be found.
     pub fn responses_by_ids(&self, ids: &HashSet<Id>) -> Vec<&Response<Payload, ErrData>> {
         match self {
-            Self::Single(single) => {
-                let mut resps = Vec::new();
-                if ids.contains(&single.id) {
-                    resps.push(single);
-                }
-                resps
-            }
+            Self::Single(single) if ids.contains(&single.id) => vec![single],
             Self::Batch(batch) => batch.iter().filter(|res| ids.contains(&res.id)).collect(),
+            _ => Vec::new(),
         }
     }
 }

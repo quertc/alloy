@@ -24,7 +24,7 @@ jobs:
         rust:
           - "stable"
           - "nightly"
-          - "1.76" # MSRV
+          - "1.82" # MSRV
         flags:
           # No features
           - "--no-default-features"
@@ -34,7 +34,7 @@ jobs:
           - "--all-features"
         exclude:
           # All features on MSRV
-          - rust: "1.76" # MSRV
+          - rust: "1.82" # MSRV
             flags: "--all-features"
     steps:
       - uses: actions/checkout@v4
@@ -53,14 +53,14 @@ jobs:
           cache-on-failure: true
       # Only run tests on latest stable and above
       - name: Install cargo-nextest
-        if: ${{ matrix.rust != '1.76' }} # MSRV
+        if: ${{ matrix.rust != '1.82' }} # MSRV
         uses: taiki-e/install-action@nextest
       - name: build
-        if: ${{ matrix.rust == '1.76' }} # MSRV
+        if: ${{ matrix.rust == '1.82' }} # MSRV
         run: cargo build --workspace ${{ matrix.flags }}
       - name: test
         shell: bash
-        if: ${{ matrix.rust != '1.76' }} # MSRV
+        if: ${{ matrix.rust != '1.82' }} # MSRV
         run: cargo nextest run --workspace ${{ matrix.flags }}
 
   doctest:
@@ -89,7 +89,8 @@ jobs:
           cache-on-failure: true
       - name: cargo hack
         run: |
-          cargo hack build --workspace --target wasm32-unknown-unknown \
+          cargo hack build --workspace --ignore-unknown-features --features ws --target wasm32-unknown-unknown \
+            --exclude alloy \
             --exclude alloy-contract \
             --exclude alloy-network \
             --exclude alloy-node-bindings \
@@ -114,8 +115,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: pin cc # https://github.com/rust-lang/cc-rs/issues/1109
-        run: cargo update cc --precise 1.0.99
       - name: cargo hack
         run: |
           cargo hack build --workspace --target wasm32-wasip1 \
@@ -126,21 +125,6 @@ jobs:
       # Ledger signer requires one of `browser` or `node` features.
       - name: build ledger
         run: cargo build -p alloy-signer-ledger --features browser --target wasm32-wasip1
-
-  no-std:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          target: riscv32imac-unknown-none-elf
-      - uses: taiki-e/install-action@cargo-hack
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: check
-        run: ./scripts/check_no_std.sh
 
   feature-checks:
     runs-on: ubuntu-latest
@@ -154,6 +138,21 @@ jobs:
           cache-on-failure: true
       - name: cargo hack
         run: cargo hack check --feature-powerset --depth 1
+
+  check-no-std:
+    name: check no_std ${{ matrix.features }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imac-unknown-none-elf
+      - uses: taiki-e/install-action@cargo-hack
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: ./scripts/check_no_std.sh
 
   clippy:
     runs-on: ubuntu-latest
@@ -183,7 +182,7 @@ jobs:
       - name: Build documentation
         run: cargo doc --workspace --all-features --no-deps --document-private-items
         env:
-          RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition -Zunstable-options
+          RUSTDOCFLAGS: --cfg docsrs -D warnings -Zunstable-options --show-type-layout --generate-link-to-definition
 
   fmt:
     runs-on: ubuntu-latest
@@ -195,15 +194,38 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  cfg-check:
+  # Check crates correctly propagate features
+  feature-propagation:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - name: run zepter
+        run: |
+          cargo install zepter -f --locked
+          zepter --version
+          time zepter run check
+
+  deny:
+    uses: ithacaxyz/ci/.github/workflows/deny.yml@main
+
+  ci-success:
+    name: ci success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - test
+      - doctest
+      - wasm-unknown
+      - wasm-wasi
+      - feature-checks
+      - check-no-std
+      - clippy
+      - docs
+      - fmt
+      - deny
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@release/v1
         with:
-          toolchain: nightly
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - run: cargo check -Zcheck-cfg --workspace
+          jobs: ${{ toJSON(needs) }}

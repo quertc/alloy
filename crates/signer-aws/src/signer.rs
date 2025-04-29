@@ -1,6 +1,6 @@
 use alloy_consensus::SignableTransaction;
-use alloy_primitives::{hex, Address, ChainId, B256};
-use alloy_signer::{sign_transaction_with_chain_id, Result, Signature, Signer};
+use alloy_primitives::{hex, Address, ChainId, Signature, B256};
+use alloy_signer::{sign_transaction_with_chain_id, Result, Signer};
 use async_trait::async_trait;
 use aws_sdk_kms::{
     error::SdkError,
@@ -93,8 +93,8 @@ pub enum AwsSignerError {
     PublicKeyNotFound,
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl alloy_network::TxSigner<Signature> for AwsSigner {
     fn address(&self) -> Address {
         self.address
@@ -110,8 +110,8 @@ impl alloy_network::TxSigner<Signature> for AwsSigner {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
 impl Signer for AwsSigner {
     #[instrument(err)]
     #[allow(clippy::blocks_in_conditions)] // tracing::instrument on async fn
@@ -134,6 +134,8 @@ impl Signer for AwsSigner {
         self.chain_id = chain_id;
     }
 }
+
+alloy_network::impl_into_wallet!(AwsSigner);
 
 impl AwsSigner {
     /// Instantiate a new signer from an existing `Client` and key ID.
@@ -180,11 +182,7 @@ impl AwsSigner {
     #[instrument(err, skip(digest), fields(digest = %hex::encode(digest)))]
     async fn sign_digest_inner(&self, digest: &B256) -> Result<Signature, AwsSignerError> {
         let sig = self.sign_digest(digest).await?;
-        let mut sig = sig_from_digest_bytes_trial_recovery(sig, digest, &self.pubkey);
-        if let Some(chain_id) = self.chain_id {
-            sig = sig.with_chain_id(chain_id);
-        }
-        Ok(sig)
+        Ok(sig_from_digest_bytes_trial_recovery(sig, digest, &self.pubkey))
     }
 }
 
@@ -233,7 +231,7 @@ fn sig_from_digest_bytes_trial_recovery(
     hash: &B256,
     pubkey: &VerifyingKey,
 ) -> Signature {
-    let signature = Signature::from_signature_and_parity(sig, false).unwrap();
+    let signature = Signature::from_signature_and_parity(sig, false);
     if check_candidate(&signature, hash, pubkey) {
         return signature;
     }

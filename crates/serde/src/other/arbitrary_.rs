@@ -1,8 +1,5 @@
 use crate::OtherFields;
-use alloc::collections::BTreeMap;
-
-#[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 impl arbitrary::Arbitrary<'_> for OtherFields {
     fn arbitrary(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
@@ -16,7 +13,6 @@ impl arbitrary::Arbitrary<'_> for OtherFields {
 
 /// Redefinition of `serde_json::Value` for the purpose of implementing `Arbitrary`.
 #[derive(Clone, Debug, arbitrary::Arbitrary)]
-#[allow(unnameable_types)]
 enum ArbitraryValue {
     Null,
     Bool(bool),

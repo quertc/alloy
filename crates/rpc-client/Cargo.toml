@@ -13,16 +13,22 @@ exclude.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+rustdoc-args = [
+    "-Zunstable-options",
+    "--generate-link-to-definition",
+    "--show-type-layout",
+]
 
 [lints]
 workspace = true
 
 [dependencies]
+alloy-primitives = { workspace = true, features = ["map"] }
 alloy-json-rpc.workspace = true
 alloy-transport-http.workspace = true
 alloy-transport.workspace = true
 
+async-stream.workspace = true
 futures.workspace = true
 pin-project.workspace = true
 serde_json.workspace = true
@@ -31,19 +37,20 @@ tokio = { workspace = true, features = ["sync"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tower.workspace = true
 tracing.workspace = true
+tracing-futures = { workspace = true, features = ["futures-03"] }
 
-alloy-primitives = { workspace = true, optional = true }
 alloy-pubsub = { workspace = true, optional = true }
 alloy-transport-ws = { workspace = true, optional = true }
 
 reqwest = { workspace = true, optional = true }
 
-hyper-util = { workspace = true, optional = true }
-
 url = { workspace = true, optional = true }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 alloy-transport-ipc = { workspace = true, optional = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasmtimer.workspace = true
 
 [dev-dependencies]
 alloy-primitives.workspace = true
@@ -51,13 +58,15 @@ alloy-node-bindings.workspace = true
 alloy-transport-ipc = { workspace = true, features = ["mock"] }
 alloy-transport-ws.workspace = true
 
+ci_info.workspace = true
 tempfile = "3"
 futures-util.workspace = true
+similar-asserts.workspace = true
 
 [features]
 default = ["reqwest"]
 reqwest = ["dep:url", "dep:reqwest", "alloy-transport-http/reqwest"]
-hyper = ["dep:url", "dep:hyper-util", "alloy-transport-http/hyper"]
-pubsub = ["dep:alloy-pubsub", "dep:alloy-primitives"]
+hyper = ["dep:url", "alloy-transport-http/hyper"]
+pubsub = ["dep:alloy-pubsub"]
 ws = ["pubsub", "dep:alloy-transport-ws", "dep:url"]
 ipc = ["pubsub", "dep:alloy-transport-ipc"]

@@ -13,7 +13,11 @@ exclude.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+rustdoc-args = [
+    "-Zunstable-options",
+    "--generate-link-to-definition",
+    "--show-type-layout",
+]
 
 [lints]
 workspace = true
@@ -31,3 +35,7 @@ tokio = { workspace = true, features = ["macros", "sync"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tower.workspace = true
 tracing.workspace = true
+parking_lot.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasmtimer.workspace = true

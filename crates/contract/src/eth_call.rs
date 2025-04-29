@@ -1,19 +1,20 @@
 use std::{future::IntoFuture, marker::PhantomData};
 
+use crate::{Error, Result};
 use alloy_dyn_abi::{DynSolValue, FunctionExt};
 use alloy_json_abi::Function;
 use alloy_network::Network;
-use alloy_primitives::Bytes;
-use alloy_rpc_types_eth::{state::StateOverride, BlockId};
+use alloy_primitives::{Address, Bytes};
+use alloy_rpc_types_eth::{
+    state::{AccountOverride, StateOverride},
+    BlockId,
+};
 use alloy_sol_types::SolCall;
-use alloy_transport::Transport;
-
-use crate::{Error, Result};
 
 /// Raw coder.
 const RAW_CODER: () = ();
 
-#[allow(unnameable_types)]
+#[expect(unnameable_types)]
 mod private {
     pub trait Sealed {}
     impl Sealed for super::Function {}
@@ -24,54 +25,44 @@ mod private {
 /// An [`alloy_provider::EthCall`] with an abi decoder.
 #[must_use = "EthCall must be awaited to execute the call"]
 #[derive(Clone, Debug)]
-pub struct EthCall<'req, 'state, 'coder, D, T, N>
+pub struct EthCall<'coder, D, N>
 where
-    T: Transport + Clone,
     N: Network,
     D: CallDecoder,
 {
-    inner: alloy_provider::EthCall<'req, 'state, T, N, Bytes>,
+    inner: alloy_provider::EthCall<N, Bytes>,
 
     decoder: &'coder D,
 }
 
-impl<'req, 'state, 'coder, D, T, N> EthCall<'req, 'state, 'coder, D, T, N>
+impl<'coder, D, N> EthCall<'coder, D, N>
 where
-    T: Transport + Clone,
     N: Network,
     D: CallDecoder,
 {
     /// Create a new [`EthCall`].
-    pub const fn new(
-        inner: alloy_provider::EthCall<'req, 'state, T, N, Bytes>,
-        decoder: &'coder D,
-    ) -> Self {
+    pub const fn new(inner: alloy_provider::EthCall<N, Bytes>, decoder: &'coder D) -> Self {
         Self { inner, decoder }
     }
 }
 
-impl<'req, 'state, T, N> EthCall<'req, 'state, 'static, (), T, N>
+impl<N> EthCall<'static, (), N>
 where
-    T: Transport + Clone,
     N: Network,
 {
     /// Create a new [`EthCall`].
-    pub const fn new_raw(inner: alloy_provider::EthCall<'req, 'state, T, N, Bytes>) -> Self {
+    pub const fn new_raw(inner: alloy_provider::EthCall<N, Bytes>) -> Self {
         Self::new(inner, &RAW_CODER)
     }
 }
 
-impl<'req, 'state, 'coder, D, T, N> EthCall<'req, 'state, 'coder, D, T, N>
+impl<D, N> EthCall<'_, D, N>
 where
-    T: Transport + Clone,
     N: Network,
     D: CallDecoder,
 {
     /// Swap the decoder for this call.
-    pub fn with_decoder<'new_coder, E>(
-        self,
-        decoder: &'new_coder E,
-    ) -> EthCall<'req, 'state, 'new_coder, E, T, N>
+    pub fn with_decoder<E>(self, decoder: &E) -> EthCall<'_, E, N>
     where
         E: CallDecoder,
     {
@@ -79,8 +70,30 @@ where
     }
 
     /// Set the state overrides for this call.
-    pub fn overrides(mut self, overrides: &'state StateOverride) -> Self {
+    pub fn overrides(mut self, overrides: impl Into<StateOverride>) -> Self {
         self.inner = self.inner.overrides(overrides);
+        self
+    }
+
+    /// Appends a single [AccountOverride] to the state override.
+    ///
+    /// Creates a new [`StateOverride`] if none has been set yet.
+    pub fn account_override(
+        mut self,
+        address: Address,
+        account_overrides: AccountOverride,
+    ) -> Self {
+        self.inner = self.inner.account_override(address, account_overrides);
+        self
+    }
+    /// Extends the given [AccountOverride] to the state override.
+    ///
+    /// Creates a new [`StateOverride`] if none has been set yet.
+    pub fn account_overrides(
+        mut self,
+        overrides: impl IntoIterator<Item = (Address, AccountOverride)>,
+    ) -> Self {
+        self.inner = self.inner.account_overrides(overrides);
         self
     }
 
@@ -91,27 +104,23 @@ where
     }
 }
 
-impl<'req, 'state, T, N> From<alloy_provider::EthCall<'req, 'state, T, N, Bytes>>
-    for EthCall<'req, 'state, 'static, (), T, N>
+impl<N> From<alloy_provider::EthCall<N, Bytes>> for EthCall<'static, (), N>
 where
-    T: Transport + Clone,
     N: Network,
 {
-    fn from(inner: alloy_provider::EthCall<'req, 'state, T, N, Bytes>) -> Self {
+    fn from(inner: alloy_provider::EthCall<N, Bytes>) -> Self {
         Self { inner, decoder: &RAW_CODER }
     }
 }
 
-impl<'req, 'state, 'coder, D, T, N> std::future::IntoFuture
-    for EthCall<'req, 'state, 'coder, D, T, N>
+impl<'coder, D, N> std::future::IntoFuture for EthCall<'coder, D, N>
 where
     D: CallDecoder + Unpin,
-    T: Transport + Clone,
     N: Network,
 {
     type Output = Result<D::CallOutput>;
 
-    type IntoFuture = EthCallFut<'req, 'state, 'coder, D, T, N>;
+    type IntoFuture = EthCallFut<'coder, D, N>;
 
     fn into_future(self) -> Self::IntoFuture {
         EthCallFut { inner: self.inner.into_future(), decoder: self.decoder }
@@ -121,23 +130,20 @@ where
 /// Future for the [`EthCall`] type. This future wraps an RPC call with an abi
 /// decoder.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-#[derive(Clone, Debug)]
-#[allow(unnameable_types)]
-pub struct EthCallFut<'req, 'state, 'coder, D, T, N>
+#[derive(Debug)]
+#[expect(unnameable_types)]
+pub struct EthCallFut<'coder, D, N>
 where
-    T: Transport + Clone,
     N: Network,
     D: CallDecoder,
 {
-    inner: <alloy_provider::EthCall<'req, 'state, T, N, Bytes> as IntoFuture>::IntoFuture,
+    inner: <alloy_provider::EthCall<N, Bytes> as IntoFuture>::IntoFuture,
     decoder: &'coder D,
 }
 
-impl<'req, 'state, 'coder, D, T, N> std::future::Future
-    for EthCallFut<'req, 'state, 'coder, D, T, N>
+impl<D, N> std::future::Future for EthCallFut<'_, D, N>
 where
     D: CallDecoder + Unpin,
-    T: Transport + Clone,
     N: Network,
 {
     type Output = Result<D::CallOutput>;
@@ -150,7 +156,7 @@ where
         let pin = std::pin::pin!(&mut this.inner);
         match pin.poll(cx) {
             std::task::Poll::Ready(Ok(data)) => {
-                std::task::Poll::Ready(this.decoder.abi_decode_output(data, true))
+                std::task::Poll::Ready(this.decoder.abi_decode_output(data))
             }
             std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e.into())),
             std::task::Poll::Pending => std::task::Poll::Pending,
@@ -173,7 +179,7 @@ pub trait CallDecoder: private::Sealed {
 
     /// Decodes the output of a contract function.
     #[doc(hidden)]
-    fn abi_decode_output(&self, data: Bytes, validate: bool) -> Result<Self::CallOutput>;
+    fn abi_decode_output(&self, data: Bytes) -> Result<Self::CallOutput>;
 
     #[doc(hidden)]
     fn as_debug_field(&self) -> impl std::fmt::Debug;
@@ -183,8 +189,8 @@ impl CallDecoder for Function {
     type CallOutput = Vec<DynSolValue>;
 
     #[inline]
-    fn abi_decode_output(&self, data: Bytes, validate: bool) -> Result<Self::CallOutput> {
-        FunctionExt::abi_decode_output(self, &data, validate).map_err(Error::AbiError)
+    fn abi_decode_output(&self, data: Bytes) -> Result<Self::CallOutput> {
+        FunctionExt::abi_decode_output(self, &data).map_err(|e| Error::decode(&self.name, &data, e))
     }
 
     #[inline]
@@ -197,8 +203,8 @@ impl<C: SolCall> CallDecoder for PhantomData<C> {
     type CallOutput = C::Return;
 
     #[inline]
-    fn abi_decode_output(&self, data: Bytes, validate: bool) -> Result<Self::CallOutput> {
-        C::abi_decode_returns(&data, validate).map_err(|e| Error::AbiError(e.into()))
+    fn abi_decode_output(&self, data: Bytes) -> Result<Self::CallOutput> {
+        C::abi_decode_returns(&data).map_err(|e| Error::decode(C::SIGNATURE, &data, e.into()))
     }
 
     #[inline]
@@ -211,7 +217,7 @@ impl CallDecoder for () {
     type CallOutput = Bytes;
 
     #[inline]
-    fn abi_decode_output(&self, data: Bytes, _validate: bool) -> Result<Self::CallOutput> {
+    fn abi_decode_output(&self, data: Bytes) -> Result<Self::CallOutput> {
         Ok(data)
     }
 

@@ -1,14 +1,17 @@
 use crate::{ContractInstance, Error, Result};
 use alloy_dyn_abi::{DynSolValue, FunctionExt, JsonAbiExt};
 use alloy_json_abi::{Function, JsonAbi};
-use alloy_primitives::{Address, Selector};
-use std::collections::{BTreeMap, HashMap};
+use alloy_primitives::{
+    map::{FbHashMap, SelectorHashMap},
+    Address, FixedBytes, Selector,
+};
+use std::collections::BTreeMap;
 
 /// A smart contract interface.
 #[derive(Clone, Debug)]
 pub struct Interface {
     abi: JsonAbi,
-    functions: HashMap<Selector, (String, usize)>,
+    functions: SelectorHashMap<(String, usize)>,
 }
 
 // TODO: events/errors
@@ -46,13 +49,8 @@ impl Interface {
     ///
     /// If the function exists multiple times and you want to use one of the overloaded versions,
     /// consider using [`Self::decode_input_with_selector`].
-    pub fn decode_input(
-        &self,
-        name: &str,
-        data: &[u8],
-        validate: bool,
-    ) -> Result<Vec<DynSolValue>> {
-        self.get_from_name(name)?.abi_decode_input(data, validate).map_err(Into::into)
+    pub fn decode_input(&self, name: &str, data: &[u8]) -> Result<Vec<DynSolValue>> {
+        self.get_from_name(name)?.abi_decode_input(data).map_err(Into::into)
     }
 
     /// Decode the provided ABI encoded bytes as the input of the provided function selector.
@@ -60,9 +58,8 @@ impl Interface {
         &self,
         selector: &Selector,
         data: &[u8],
-        validate: bool,
     ) -> Result<Vec<DynSolValue>> {
-        self.get_from_selector(selector)?.abi_decode_input(data, validate).map_err(Into::into)
+        self.get_from_selector(selector)?.abi_decode_input(data).map_err(Into::into)
     }
 
     /// Decode the provided ABI encoded bytes as the output of the first function with the given
@@ -72,13 +69,8 @@ impl Interface {
     ///
     /// If there are multiple functions with the same name, consider using
     /// [`Self::decode_output_with_selector`]
-    pub fn decode_output(
-        &self,
-        name: &str,
-        data: &[u8],
-        validate: bool,
-    ) -> Result<Vec<DynSolValue>> {
-        self.get_from_name(name)?.abi_decode_output(data, validate).map_err(Into::into)
+    pub fn decode_output(&self, name: &str, data: &[u8]) -> Result<Vec<DynSolValue>> {
+        self.get_from_name(name)?.abi_decode_output(data).map_err(Into::into)
     }
 
     /// Decode the provided ABI encoded bytes as the output of the provided function selector.
@@ -86,9 +78,8 @@ impl Interface {
         &self,
         selector: &Selector,
         data: &[u8],
-        validate: bool,
     ) -> Result<Vec<DynSolValue>> {
-        self.get_from_selector(selector)?.abi_decode_output(data, validate).map_err(Into::into)
+        self.get_from_selector(selector)?.abi_decode_output(data).map_err(Into::into)
     }
 
     /// Returns a reference to the contract's ABI.
@@ -116,24 +107,19 @@ impl Interface {
     }
 
     /// Create a [`ContractInstance`] from this ABI for a contract at the given address.
-    pub const fn connect<T, P, N>(
-        self,
-        address: Address,
-        provider: P,
-    ) -> ContractInstance<T, P, N> {
+    pub const fn connect<P, N>(self, address: Address, provider: P) -> ContractInstance<P, N> {
         ContractInstance::new(address, provider, self)
     }
 }
 
 /// Utility function for creating a mapping between a unique signature and a
 /// name-index pair for accessing contract ABI items.
-fn create_mapping<T, S, F>(
+fn create_mapping<const N: usize, T, F>(
     elements: &BTreeMap<String, Vec<T>>,
     signature: F,
-) -> HashMap<S, (String, usize)>
+) -> FbHashMap<N, (String, usize)>
 where
-    S: std::hash::Hash + Eq,
-    F: Fn(&T) -> S + Copy,
+    F: Fn(&T) -> FixedBytes<N> + Copy,
 {
     elements
         .iter()
